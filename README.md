@@ -397,7 +397,7 @@ git push origin feature/your-feature
 
 ## 📞 联系方式
 
-- 项目主页: https://github.com/which_W/GPT_LM
+- 项目主页: [https://github.com/which_W/GPT_LM](https://github.com/which-W/GPT_LM)
 - 问题反馈: [GitHub Issues](https://github.com/which_W/GPT_LM/issues)
 - 讨论交流: [GitHub Discussions](https://github.com/which_W/GPT_LM/discussions)
 
