@@ -403,7 +403,7 @@ git push origin feature/your-feature
 
 <div align="center">
 
-**⭐ 如果这个项目对您有帮助，请给我们一个Star！**
+**⭐ 如果这个项目对您有帮助，请给我一个Star！**
 
 Made with ❤️ by the which_W
 
