@@ -5,7 +5,7 @@
 from collections import deque
 import xxhash
 import numpy as np
-from sequence import Sequence
+from vllm_support.engine.sequence import Sequence
 
 
 class Block:

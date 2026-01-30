@@ -188,8 +188,6 @@ class PagedCausalMultiHeadAttention(nn.Module):
         block_tables: torch.Tensor = None,
         slot_mapping: torch.Tensor = None,
         context_lens: torch.Tensor = None,
-        # 简单cache
-        use_cache: bool = False,
     ) -> torch.Tensor:
         """
         统一的前向传播，支持训练和推理两种模式
@@ -218,7 +216,7 @@ class PagedCausalMultiHeadAttention(nn.Module):
             k = self.rope(k, token_position)
         
         # 根据模式选择注意力计算方式
-        if block_tables is None and not use_cache:
+        if block_tables is None :
             # 训练模式:标准因果注意力
             mask = torch.tril(torch.ones(s, s, device=self.device, dtype=torch.bool))
             attn_out = scaled_dot_product_attention(q, k, v, mask=mask)
@@ -249,13 +247,7 @@ class PagedCausalMultiHeadAttention(nn.Module):
             # 注意力计算（新 token 可以看所有历史）
             mask = torch.ones(s, k_full.shape[2], device=self.device, dtype=torch.bool)
             attn_out = scaled_dot_product_attention(q, k_full, v_full, mask=mask)
-        
-        else:
-            # 【兼容旧的 use_cache 模式】
-            
-            mask = torch.tril(torch.ones(s, s, device=self.device, dtype=torch.bool))
-            attn_out = scaled_dot_product_attention(q, k, v, mask=mask)
-        
+             
         # 合并多头
         attn_out = rearrange(attn_out, '... h s d -> ... s (h d)')
         return self.output_pro(attn_out)

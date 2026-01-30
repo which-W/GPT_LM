@@ -5,7 +5,7 @@
 from typing import Optional
 import torch
 from torch import nn
-from vllm_transformer_block import PagedTransformerBlock
+from vllm_support.vllm_transformer_block import PagedTransformerBlock
 from emb import CustomEmbedding
 from rmsnorm import RMSNorm
 
@@ -88,8 +88,6 @@ class PagedTransformerLM(nn.Module):
         block_tables: torch.Tensor = None,
         slot_mapping: torch.Tensor = None,
         context_lens: torch.Tensor = None,
-        # 兼容旧接口
-        use_cache: bool = False,
     ):
         """
         统一的前向传播
@@ -104,24 +102,15 @@ class PagedTransformerLM(nn.Module):
         b, s = token_ids.shape
         
         # 获取位置编码
-        if use_cache:
-            # 旧接口兼容
-            start_pos = self._current_pos
-            token_position = torch.arange(
-                start_pos, start_pos + s,
-                device=self.device, dtype=torch.long
-            ).unsqueeze(0).expand(b, s)
-            self._current_pos += s
+        # vLLM 模式或训练模式
+        if context_lens is not None and not is_prefill:
+            # Decode: 位置 = 当前上下文长度
+            token_position = context_lens.unsqueeze(1).expand(b, s)
         else:
-            # vLLM 模式或训练模式
-            if context_lens is not None and not is_prefill:
-                # Decode: 位置 = 当前上下文长度
-                token_position = context_lens.unsqueeze(1).expand(b, s)
-            else:
-                # Prefill 或训练: 从0开始的顺序位置
-                token_position = torch.arange(
-                    s, device=self.device, dtype=torch.long
-                ).unsqueeze(0).expand(b, s)
+            # Prefill 或训练: 从0开始的顺序位置
+            token_position = torch.arange(
+                s, device=self.device, dtype=torch.long
+            ).unsqueeze(0).expand(b, s)
         
         # Embedding
         x = self.embedding(token_ids)
@@ -135,7 +124,6 @@ class PagedTransformerLM(nn.Module):
                 block_tables=block_tables,
                 slot_mapping=slot_mapping,
                 context_lens=context_lens,
-                use_cache=use_cache
             )
         
         # 最终归一化

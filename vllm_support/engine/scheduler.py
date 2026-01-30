@@ -4,8 +4,8 @@
 """
 from collections import deque
 import torch
-from sequence import Sequence, SequenceStatus
-from block_manager import BlockManager
+from vllm_support.engine.sequence import Sequence, SequenceStatus
+from vllm_support.engine.block_manager import BlockManager
 
 
 class Scheduler:

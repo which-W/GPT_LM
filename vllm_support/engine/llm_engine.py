@@ -6,9 +6,9 @@ import torch
 import torch.nn.functional as F
 from tqdm.auto import tqdm
 from typing import List, Union
-from vllm_transformer import PagedTransformerLM
-from scheduler import Scheduler
-from sequence import Sequence, SamplingParams
+from vllm_support.vllm_transformer import PagedTransformerLM
+from vllm_support.engine.scheduler import Scheduler
+from vllm_support.engine.sequence import Sequence, SamplingParams
 
 
 class ModelRunner:
@@ -125,7 +125,6 @@ class ModelRunner:
                 block_tables=block_tables,
                 slot_mapping=slot_mapping,
                 context_lens=context_lens,
-                use_cache=False
             )
         
         # 取最后一个位置的 logits

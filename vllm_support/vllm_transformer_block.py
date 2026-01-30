@@ -4,7 +4,7 @@
 """
 import torch
 from torch import nn
-from vllm_attention import PagedCausalMultiHeadAttention
+from vllm_support.vllm_attention import PagedCausalMultiHeadAttention
 from rmsnorm import RMSNorm
 from swiGLU import SwiGLU
 
@@ -55,9 +55,6 @@ class PagedTransformerBlock(nn.Module):
         block_tables: torch.Tensor = None,
         slot_mapping: torch.Tensor = None,
         context_lens: torch.Tensor = None,
-        #简单cache
-        use_cache: bool = False,
-        start_pos: int = 0,
     ):
         """
         Pre-Norm Transformer Block
@@ -78,8 +75,6 @@ class PagedTransformerBlock(nn.Module):
             block_tables=block_tables,
             slot_mapping=slot_mapping,
             context_lens=context_lens,
-            use_cache=use_cache,
-            start_pos=start_pos
         )
         
         # 2. FFN 子层
