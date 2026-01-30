@@ -1,0 +1,26 @@
+# 4卡训练,使用bfloat16,梯度累积,WandB监控
+torchrun --nproc_per_node=4 train_distributed.py \
+    --distributed \
+    --train_data_path data/train.bin \
+    --valid_data_path data/val.bin \
+    --d_model 768 \
+    --n_head 12 \
+    --n_layer 12 \
+    --d_ff 3072 \
+    --vocab_size 50000 \
+    --max_seq_len 1024 \
+    --batch_size 8 \
+    --gradient_accumulation_steps 4 \
+    --max_lr 6e-4 \
+    --min_lr 6e-5 \
+    --warmup_steps 2000 \
+    --total_steps 50000 \
+    --dtype bfloat16 \
+    --max_grad_norm 1.0 \
+    --save_interval 5000 \
+    --eval_interval 1000 \
+    --log_interval 100 \
+    --use_wandb \
+    --wandb_project "transformer-large" \
+    --wandb_run_name "4gpu-bf16-bs128" \
+    --checkpoint_dir "./checkpoints"
