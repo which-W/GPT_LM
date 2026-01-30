@@ -7,13 +7,13 @@ import argparse
 import os
 import numpy as np
 from pathlib import Path
-from GPT_LM.transformer import TransformerLM
-from GPT_LM.adamw import AdamW
-from GPT_LM.shedule import CosineAnnealingWarmupScheduler
-from GPT_LM.cross_entropy import Cross_entropy
-from GPT_LM.get_batch import get_batch
-from GPT_LM.clip_gradient_noem import Clip_gradient_noem
-from GPT_LM.checpoint_use import save_checkpoint, load_checkpoint
+from transformer import TransformerLM
+from adamw import AdamW
+from shedule import CosineAnnealingWarmupScheduler
+from cross_entropy import Cross_entropy
+from get_batch import get_batch
+from clip_gradient_noem import Clip_gradient_noem
+from checpoint_use import save_checkpoint, load_checkpoint
 
 
 def setup_distributed(rank, world_size, backend='nccl'):

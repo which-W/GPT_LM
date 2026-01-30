@@ -4,7 +4,7 @@ import argparse
 import time
 from pathlib import Path
 from tokenizers import Tokenizer
-from GPT_LM.transformer import TransformerLM
+from transformer import TransformerLM
 
 class SpeculativeGenerator:
     """投机采样生成器 - 支持交互模式"""
