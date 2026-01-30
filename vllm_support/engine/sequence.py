@@ -20,10 +20,11 @@ class SamplingParams:
     """采样参数"""
     temperature: float = 1.0
     max_tokens: int = 512
-    ignore_eos: bool = False
+    ignore_eos: bool = True
     top_p: float = 0.9
     top_k: int = 20
-
+    repetition_penalty:float= 1.2
+    eos_token_id: int = 0 
 
 class Sequence:
     """
@@ -42,7 +43,6 @@ class Sequence:
         """
         if sampling_params is None:
             sampling_params = SamplingParams()
-        
         # 基础信息
         self.seq_id = next(Sequence.counter)
         self.status = SequenceStatus.WAITING
@@ -53,6 +53,7 @@ class Sequence:
         self.num_tokens = len(token_ids)
         self.num_prompt_tokens = len(token_ids)
         
+      
         # PagedAttention 相关
         self.num_cached_tokens = 0  # 已缓存的 token 数
         self.block_table = []  # 物理块 ID 列表
@@ -63,7 +64,8 @@ class Sequence:
         self.ignore_eos = sampling_params.ignore_eos
         self.top_p = sampling_params.top_p
         self.top_k = sampling_params.top_k
-    
+        self.repetition_penalty = sampling_params.repetition_penalty
+        self.eos_token_id = sampling_params.eos_token_id
     def __len__(self):
         """返回当前序列长度"""
         return self.num_tokens

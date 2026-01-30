@@ -3,7 +3,6 @@
 负责决定每一轮推理运行哪些序列
 """
 from collections import deque
-import torch
 from vllm_support.engine.sequence import Sequence, SequenceStatus
 from vllm_support.engine.block_manager import BlockManager
 
@@ -126,7 +125,6 @@ class Scheduler:
         """
         for seq, token_id in zip(seqs, token_ids):
             seq.append_token(token_id)
-            
             # 检查是否结束
             if ((not seq.ignore_eos and token_id == self.eos) or 
                 seq.num_completion_tokens >= seq.max_tokens):

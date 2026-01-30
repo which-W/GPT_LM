@@ -17,6 +17,7 @@ def scaled_dot_product_attention(
     scores = torch.einsum('...nk,...mk -> ...nm', Q, K) / math.sqrt(d_k)
     
     if mask is not None:
+        mask = mask.to(scores.device) 
         scores = scores.masked_fill(mask == False, float('-inf'))
     
     softmax = StableSoftmax(dim=-1)
@@ -26,11 +27,12 @@ def scaled_dot_product_attention(
     return output
 
 
-class PagedKVCache:
+class PagedKVCache(nn.Module):
     """
     PagedAttention 风格的 KV Cache
     使用物理块管理，支持非连续内存存储
     """
+    
     def __init__(
         self, 
         num_blocks: int, 
@@ -47,21 +49,27 @@ class PagedKVCache:
             num_heads: 注意力头数
             head_dim: 每个头的维度
         """
+        super().__init__()
         self.num_blocks = num_blocks
         self.block_size = block_size
         self.num_heads = num_heads
         self.head_dim = head_dim
-        self.device = device
         
         # 物理 KV Cache 池：[num_blocks, block_size, num_heads, head_dim]
-        self.k_cache = torch.zeros(
-            num_blocks, block_size, num_heads, head_dim,
-            device=device, dtype=dtype
+        self.register_buffer(
+            "k_cache",
+            torch.zeros(
+                num_blocks, block_size, num_heads, head_dim,
+                dtype=dtype
+            )
         )
-        self.v_cache = torch.zeros(
-            num_blocks, block_size, num_heads, head_dim,
-            device=device, dtype=dtype
-        )
+        self.register_buffer(
+            "v_cache",
+            torch.zeros(
+                num_blocks, block_size, num_heads, head_dim,
+                dtype=dtype
+            )
+)
     
     def store(
         self,
@@ -104,9 +112,12 @@ class PagedKVCache:
         max_context_len = context_lens.max().item()
         
         # 预分配输出
+        device = self.k_cache.device
+
         k_out = torch.zeros(
             batch_size, self.num_heads, max_context_len, self.head_dim,
-            device=self.device, dtype=self.k_cache.dtype
+            device=device,
+            dtype=self.k_cache.dtype
         )
         v_out = torch.zeros_like(k_out)
         
@@ -196,10 +207,10 @@ class PagedCausalMultiHeadAttention(nn.Module):
             标准的因果注意力，不使用 Paged Cache
         
         Prefill 推理模式 (is_prefill=True, block_tables!=None):
-            使用 Paged Cache 存储 KV，支持前缀缓存
+            使用 Paged Cache 存储 KV,支持前缀缓存
         
         Decode 推理模式 (is_prefill=False):
-            从 Paged Cache 读取历史 KV，只计算新 token
+            从 Paged Cache 读取历史 KV,只计算新 token
         """
         b, s, d = x.shape
         
@@ -218,7 +229,7 @@ class PagedCausalMultiHeadAttention(nn.Module):
         # 根据模式选择注意力计算方式
         if block_tables is None :
             # 训练模式:标准因果注意力
-            mask = torch.tril(torch.ones(s, s, device=self.device, dtype=torch.bool))
+            mask = torch.tril(torch.ones(s, s, device=x.device, dtype=torch.bool))
             attn_out = scaled_dot_product_attention(q, k, v, mask=mask)
         
         elif is_prefill and block_tables is not None:
@@ -239,7 +250,6 @@ class PagedCausalMultiHeadAttention(nn.Module):
             # 存储当前新 token 的 KV
             if slot_mapping is not None:
                 self.paged_cache.store(k, v, slot_mapping)
-            
             # 拼接新旧 KV
             k_full = torch.cat([k_cache, k], dim=2)
             v_full = torch.cat([v_cache, v], dim=2)
@@ -258,4 +268,3 @@ class PagedCausalMultiHeadAttention(nn.Module):
 
 
 
-CauseMutiHeadAttention = PagedCausalMultiHeadAttention

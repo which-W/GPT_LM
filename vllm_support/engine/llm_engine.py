@@ -156,7 +156,25 @@ class ModelRunner:
         for i, seq in enumerate(seqs):
             # 应用温度
             logit = logits[i] / seq.temperature
-            
+            eos_id = seq.eos_token_id
+            # 第一 token 绝对禁止 EOS
+            if seq.num_completion_tokens == 0:
+                logit[eos_id] = torch.finfo(logit.dtype).min
+            # 重复惩罚
+            if seq.repetition_penalty != 1.0:
+                penalty = seq.repetition_penalty
+
+                # 历史 token（prompt + 已生成）
+                seen_tokens = set(seq.token_ids + seq.completion_token_ids)
+
+                for t in seen_tokens:
+                    if t < 0 or t >= logit.size(0):
+                        continue
+                    if logit[t] > 0:
+                        logit[t] /= penalty
+                    else:
+                        logit[t] *= penalty
+
             # Top-k 采样
             if seq.top_k > 0:
                 top_k_logits, top_k_indices = torch.topk(logit, min(seq.top_k, logit.size(-1)))
@@ -297,9 +315,19 @@ class LLMEngine:
         Returns:
             outputs: 生成结果列表，每个元素包含 'token_ids' 和可选的 'text'
         """
+        if sampling_params is None:
+            sampling_params = SamplingParams()
+
+        if isinstance(sampling_params, SamplingParams):
+            sampling_params = [sampling_params] * len(prompts)
         # 初始化进度条
         if use_tqdm:
-            pbar = tqdm(total=len(prompts), desc="Generating", dynamic_ncols=True)
+           pbar = tqdm(
+                total=sampling_params[0].max_tokens,
+                desc="Decoding",
+                dynamic_ncols=True
+            )
+
         
         # 处理采样参数
         if not isinstance(sampling_params, list):
@@ -317,7 +345,8 @@ class LLMEngine:
         while not self.is_finished():
             t = time.time()
             output, num_tokens = self.step()
-            
+            if use_tqdm and num_tokens < 0:
+                 pbar.update(-num_tokens)
             # 更新吞吐量
             if use_tqdm:
                 if num_tokens > 0:
@@ -332,13 +361,10 @@ class LLMEngine:
             # 保存完成的序列
             for seq_id, token_ids in output:
                 outputs[seq_id] = token_ids
-                if use_tqdm:
-                    pbar.update(1)
         
         # 排序并格式化输出
         outputs = [outputs[seq_id] for seq_id in sorted(outputs.keys())]
         outputs = [{"token_ids": token_ids} for token_ids in outputs]
-        
         if use_tqdm:
             pbar.close()
         
