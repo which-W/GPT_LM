@@ -4,7 +4,7 @@ from pathlib import Path
 
 def preprocess_file(input_file, output_file, tokenizer_path="tokenizer.json", chunk_size=10_000_000):
     """
-    将文本文件转换为二进制token文件（分块处理避免内存溢出）
+    将文本文件转换为二进制token文件(分块处理避免内存溢出)
     
     Args:
         input_file: 输入的文本文件路径
