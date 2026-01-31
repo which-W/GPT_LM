@@ -59,7 +59,7 @@
 ### 克隆项目
 
 ```bash
-git clone https://github.com/yourusername/GPT_LM.git
+git clone https://github.com/which-W/GPT_LM.git
 cd GPT_LM
 ```
 
