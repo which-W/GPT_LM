@@ -148,7 +148,7 @@ if __name__ == "__main__":
     print(f"\n可用GPU数量: {n_gpus}")
     
     if n_gpus < 2:
-        print("⚠️ 需要至少2张GPU才能测试专家并行")
+        print("需要至少2张GPU才能测试专家并行")
     else:
         # 创建专家并行MoE
         moe = ExpertParallelMoE(
