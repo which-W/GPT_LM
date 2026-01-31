@@ -23,7 +23,7 @@ class Expert(nn.Module):
         self.device = device
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.ffn(x)
+        return x+self.ffn(x)
 
 
 class ExpertParallelMoE(nn.Module):
