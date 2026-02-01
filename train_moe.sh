@@ -1,7 +1,5 @@
 #!/bin/bash
-
 # MoE Transformer 训练示例脚本
-
 # 示例1: 训练标准MoE模型 (所有层都使用MoE)，推荐这个使用moe全层
 ./.venv/bin/python3 -m moe_model.train_moe \
     --use_moe \

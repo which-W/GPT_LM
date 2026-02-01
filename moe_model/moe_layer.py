@@ -14,8 +14,8 @@ class ExpertParallelMoELayer(nn.Module):
     专家并行MoE层
     
     组成:
-    - Router: 在主GPU上，负责为每个token选择专家
-    - Experts: 分布在多张GPU上，每个专家在不同的GPU
+    - Router: 在主GPU上,负责为每个token选择专家
+    - Experts: 分布在多张GPU上,每个专家在不同的GPU
     
     使用场景:
     - 专家数量 <= GPU数量
