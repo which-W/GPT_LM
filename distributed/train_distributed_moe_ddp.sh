@@ -1,9 +1,8 @@
 #!/bin/bash
 # MoE分布式训练启动脚本
 
-# ==========================================
+
 # 示例1: 4卡全MoE训练
-# ==========================================
 torchrun --nproc_per_node=4 train_moe_distributed.py \
     --distributed \
     --train_data_path data/train.bin \ 
@@ -35,10 +34,9 @@ torchrun --nproc_per_node=4 train_moe_distributed.py \
     --checkpoint_dir "./checkpoints"
 
 
-# ==========================================
+
 # 示例2: 8卡混合MoE训练
 # 只在某些层使用MoE
-# ==========================================
 # torchrun --nproc_per_node=8 train_moe_distributed.py \
 #     --distributed \
 #     --use_hybrid_moe \
