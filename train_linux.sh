@@ -1,3 +1,4 @@
+#普通架构
 python3 train.py \
   --train_data_path ./data/TinyStories-train.bin \
   --valid_data_path ./data/TinyStories-valid.bin \

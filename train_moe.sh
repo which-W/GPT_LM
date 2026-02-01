@@ -3,7 +3,7 @@
 # MoE Transformer 训练示例脚本
 
 # 示例1: 训练标准MoE模型 (所有层都使用MoE)，推荐这个使用moe全层
-python train_moe.py \
+./.venv/bin/python3 -m moe_model.train_moe \
     --use_moe \
     --d_model 512 \
     --n_head 8 \
@@ -20,8 +20,8 @@ python train_moe.py \
     --min_lr 3e-5 \
     --warmup_steps 2000 \
     --total_steps 10000 \
-    --train_data_path ./data/train.bin \
-    --valid_data_path ./data/val.bin \
+    --train_data_path ./data/TinyStories-train.bin \
+    --valid_data_path ./data/TinyStories-valid.bin \
     --checkpoint_dir ./checkpoints_moe \
     --save_interval 1000 \
     --log_interval 100 \
@@ -33,7 +33,7 @@ python train_moe.py \
 
 
 # 示例2: 训练混合MoE模型 (部分层使用MoE)
-# python train_moe.py \
+# ./.venv/bin/python3 train_moe.py \
 #     --use_hybrid_moe \
 #     --moe_layer_indices "0,2,4" \
 #     --d_model 512 \
@@ -61,7 +61,7 @@ python train_moe.py \
 
 
 # # 示例3: 多GPU训练
-# python train_moe.py \
+# ./.venv/bin/python3 train_moe.py \
 #     --use_moe \
 #     --device_ids "0,1,2,3" \
 #     --main_device 0 \
@@ -93,7 +93,7 @@ python train_moe.py \
 
 
 # # 示例4: 从检查点恢复训练
-# python train_moe.py \
+# ./.venv/bin/python3 train_moe.py \
 #     --use_moe \
 #     --resume_from ./checkpoints_moe/checkpoint_step_5000.pt \
 #     --d_model 512 \

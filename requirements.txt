@@ -1,0 +1,17 @@
+torch
+torchaudio
+torchvision
+einops
+filelock
+fsspec
+Jinja2
+MarkupSafe
+mpmath
+networkx
+numpy
+pillow
+pip
+setuptools
+sympy
+typing_extensions
+wandb

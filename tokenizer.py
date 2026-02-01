@@ -22,7 +22,7 @@ trainer = BpeTrainer(
     vocab_size=30000,
     special_tokens=["<|endoftext|>"],
     show_progress=True,
-    min_frequency=2,
+    min_frequency=1,
 )
 
 # 收集训练文件
