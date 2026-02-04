@@ -1,5 +1,0 @@
-torch
-torchaudio
-torchvision
-einops
-wandb

@@ -3,3 +3,6 @@ torchaudio
 torchvision
 einops
 wandb
+tokenizers
+xxhash
+transformers
