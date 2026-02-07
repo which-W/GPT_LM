@@ -3,10 +3,6 @@
 
 set -e  # 遇到错误立即退出
 
-echo "======================================"
-echo "Tron Support DP+TP 训练示例"
-echo "======================================"
-
 # 配置参数
 EXP_NAME="example_dp2_tp2"
 OUT_DIR="tmp"
