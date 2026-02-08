@@ -13,7 +13,7 @@ from shedule import CosineAnnealingWarmupScheduler
 from cross_entropy import Cross_entropy
 from clip_gradient_noem import Clip_gradient_noem
 from checpoint_use import save_checkpoint, load_checkpoint
-
+from tokenizers import Tokenizer
 
 class SFTDataset(Dataset):
     """
@@ -255,31 +255,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_tokenizer(tokenizer_path):
-    """
-    加载分词器
-    这里假设你有一个tokenizer.py文件提供encode/decode函数
-    根据你的实际情况修改
-    """
-    # 示例实现 - 需要根据你的实际tokenizer修改
-    import sys
-    sys.path.insert(0, str(Path(tokenizer_path).parent))
-    
-    try:
-        from tokenizer import encode, decode
-        return encode, decode
-    except ImportError:
-        print("警告: 未找到tokenizer模块,使用简单的字符级编码")
-        
-        # 简单的fallback (仅用于测试)
-        def simple_encode(text):
-            return [ord(c) % 30000 for c in text[:512]]
-        
-        def simple_decode(ids):
-            return ''.join([chr(i) for i in ids if i > 0])
-        
-        return simple_encode, simple_decode
-
 
 def evaluate(model, dataloader, device, max_eval_batches=None):
     """评估模型"""
@@ -334,7 +309,7 @@ def train(args):
     
     # 加载分词器
     print("加载分词器...")
-    encode_fn, decode_fn = load_tokenizer(args.tokenizer_path)
+    encode_fn = Tokenizer.encode
     
     # 加载数据集
     print("加载SFT数据集...")

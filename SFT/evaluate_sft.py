@@ -14,40 +14,8 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import List, Dict
 from transformer import TransformerLM
-from sft_inference import load_tokenizer, generate, format_prompt
-
-
-def load_model(checkpoint_path: str, args):
-    """加载模型"""
-    dtype_map = {
-        'float32': torch.float32,
-        'float16': torch.float16,
-        'bfloat16': torch.bfloat16
-    }
-    dtype = dtype_map[args.dtype]
-    
-    model = TransformerLM(
-        d_model=args.d_model,
-        n_head=args.n_head,
-        vocab_size=args.vocab_size,
-        max_seq_len=args.max_seq_len,
-        d_ff=args.d_ff,
-        theta=args.theta,
-        n_layer=args.n_layer,
-        device=args.device,
-        dtype=dtype,
-        use_rms_norm=not args.no_rms_norm,
-        norm_model=args.norm_rope,
-        ffn_type=args.ffn_type,
-    ).to(args.device)
-    
-    checkpoint = torch.load(checkpoint_path, map_location=args.device)
-    if 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
-    else:
-        model.load_state_dict(checkpoint)
-    
-    return model
+from SFT.sft_test_inference import load_tokenizer, generate, format_prompt
+from checpoint_use import load_checkpoint 
 
 
 def evaluate_on_dataset(
@@ -300,7 +268,7 @@ def main():
     if args.mode == 'evaluate':
         # 单模型评估
         print("\n加载SFT模型...")
-        model = load_model(args.checkpoint_path, args)
+        model = load_checkpoint(args.checkpoint_path, args)
         
         print("\n开始评估...")
         results = evaluate_on_dataset(model, test_data, encode_fn, decode_fn, args)
@@ -333,10 +301,10 @@ def main():
             return
         
         print("\n加载预训练模型...")
-        pretrain_model = load_model(args.pretrain_checkpoint, args)
+        pretrain_model = load_checkpoint(args.pretrain_checkpoint, args)
         
         print("加载SFT模型...")
-        sft_model = load_model(args.checkpoint_path, args)
+        sft_model = load_checkpoint(args.checkpoint_path, args)
         
         print("\n评估预训练模型...")
         pretrain_results = evaluate_on_dataset(pretrain_model, test_data, encode_fn, decode_fn, args)
@@ -359,7 +327,7 @@ def main():
     elif args.mode == 'human_eval':
         # 生成人工评估模板
         print("\n加载SFT模型...")
-        model = load_model(args.checkpoint_path, args)
+        model = load_checkpoint(args.checkpoint_path, args)
         
         print("\n生成预测...")
         results = evaluate_on_dataset(model, test_data, encode_fn, decode_fn, args)
