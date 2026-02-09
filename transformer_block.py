@@ -3,6 +3,7 @@ from torch import nn
 from attention import CauseMutiHeadAttention
 from rmsnorm import RMSNorm
 from swiGLU import SwiGLU
+from mhc import mHC
 class TransformerBlock(nn.Module):
     def __init__(self,
                  d_model:int,
