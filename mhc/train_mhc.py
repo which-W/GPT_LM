@@ -4,7 +4,7 @@ import argparse
 import os
 import numpy as np
 from pathlib import Path
-from transformer_mhc import TransformerLM
+from mhc.transformer_mhc import TransformerLM
 from adamw import AdamW
 from shedule import CosineAnnealingWarmupScheduler
 from cross_entropy import Cross_entropy

@@ -3,7 +3,7 @@ from torch import nn
 from attention import CauseMutiHeadAttention
 from rmsnorm import RMSNorm
 from swiGLU import SwiGLU
-from mhc import mHC
+from mhc.mhc import mHC
 
 class TransformerBlock(nn.Module):
     def __init__(self,
@@ -49,7 +49,7 @@ class TransformerBlock(nn.Module):
         Returns:
             x: 输出张量 [B, S, n, d_model]
         """
-        # === Attention 子层 (with mHC) ===
+        # Attention 子层 (with mHC) 
         # 1. Width connection: 分支间信息交互
         h_pre, h_res, H_post = self.attn_mhc.width_connection(x)
         # h_pre: [B, S, 1, d_model] - 压缩后的表示

@@ -3,7 +3,7 @@ import torch
 from torch import nn
 from emb import CustomEmbedding
 from rmsnorm import RMSNorm
-from transformer_block import TransformerBlock
+from mhc.transformer_block_mhc import TransformerBlock
 
 class TransformerLM(nn.Module):
     """
