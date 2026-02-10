@@ -5,8 +5,8 @@
 import torch
 from torch import nn
 from typing import Optional, List
-from moe_model.moe_router import MoERouter
-from moe_model.moe_experts import ExpertParallelMoE
+from moe.moe_router import MoERouter
+from moe.moe_experts import ExpertParallelMoE
 
 
 class ExpertParallelMoELayer(nn.Module):

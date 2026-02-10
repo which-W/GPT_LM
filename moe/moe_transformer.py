@@ -7,7 +7,7 @@ from torch import nn
 from typing import Optional, List
 from emb import CustomEmbedding
 from rmsnorm import RMSNorm
-from moe_model.moe_transformer_block import MoETransformerBlock, HybridTransformerBlock
+from moe.moe_transformer_block import MoETransformerBlock, HybridTransformerBlock
 
 
 class MoETransformerLM(nn.Module):

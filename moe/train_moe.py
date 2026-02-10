@@ -4,7 +4,7 @@ import argparse
 import os
 import numpy as np
 from pathlib import Path
-from moe_model.moe_transformer import MoETransformerLM, HybridMoETransformerLM
+from moe.moe_transformer import MoETransformerLM, HybridMoETransformerLM
 from adamw import AdamW
 from shedule import CosineAnnealingWarmupScheduler
 from cross_entropy import Cross_entropy

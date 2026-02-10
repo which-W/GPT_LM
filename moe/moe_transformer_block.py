@@ -7,7 +7,7 @@ from torch import nn
 from typing import Optional, List
 from attention import CauseMutiHeadAttention
 from rmsnorm import RMSNorm
-from moe_model.moe_layer import ExpertParallelMoELayer
+from moe.moe_layer import ExpertParallelMoELayer
 
 
 class MoETransformerBlock(nn.Module):

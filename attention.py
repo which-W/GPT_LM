@@ -190,7 +190,7 @@ class CauseMutiHeadAttention(nn.Module):
         
         #合并多头
         attn_out = rearrange(attn_out,'... h s d -> ... s (h d)')
-
+        #返回output以便之后取出logits
         return self.output_pro(attn_out)
     def clear_cache(self):
         """清空 KV Cache"""
