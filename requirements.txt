@@ -6,3 +6,4 @@ wandb
 tokenizers
 xxhash
 transformers
+trl
