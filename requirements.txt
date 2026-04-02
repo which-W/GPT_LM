@@ -7,3 +7,7 @@ tokenizers
 xxhash
 transformers
 trl
+latex2sympy2-extended
+math-verify
+pylatexenc
+openai
