@@ -1,0 +1,85 @@
+# ============================================================
+# pyproject.toml — uv 完整解决方案
+# 使用方式：
+#   1. 安装 uv：  curl -LsSf https://astral.sh/uv/install.sh | sh
+#   2. 创建环境：  uv venv --python 3.11
+#   3. 激活环境：  source .venv/bin/activate
+#   4. 安装依赖：  uv sync
+#
+# CUDA wheel 说明：
+#   uv 默认从 PyPI 拉取，torch/vllm 的 CUDA wheel 需要通过
+#   [[tool.uv.index]] 指向 PyTorch 官方 CUDA 源。
+#   下面已配置 CUDA 12.1 源，如使用 CUDA 11.8 请将 cu121 改为 cu118。
+# ============================================================
+
+[project]
+name = "sft-training"
+version = "0.1.0"
+description = "SFT training pipeline with vLLM evaluation"
+requires-python = "==3.11.*"
+
+dependencies = [
+    # PyTorch 生态 — 版本必须三者对齐
+    "torch==2.6.0",
+    "torchaudio==2.6.0",
+    "torchvision==0.21.0",
+
+    # 推理引擎
+    "vllm==0.8.5.post1",
+
+    # HuggingFace 生态
+    # transformers <5.0 是硬性上限，vllm 0.8.x 不兼容 transformers 5.x
+    "transformers==4.51.3",
+    "tokenizers==0.21.0",
+
+    # 训练工具
+    "trl==0.15.2",
+    "einops==0.8.2",
+
+    # 实验追踪
+    "wandb==0.19.11",
+
+    # 数据工具
+    "xxhash==3.5.0",
+
+    # 数学验证（reward_fn 依赖）
+    "latex2sympy2-extended==1.10.2",
+    "math-verify==0.7.0",
+    "pylatexenc==2.10",
+
+    # API 调用
+    "openai==1.57.4",
+
+    # 数值计算
+    "numpy>=1.26.0,<3.0.0",
+]
+
+# ============================================================
+# uv 索引配置
+# ============================================================
+[tool.uv]
+# 将 PyTorch CUDA 源设为第一优先级，解决 vllm/torch 编译 wheel 问题
+# uv 会优先从这里找 torch / torchvision / torchaudio 的预编译 CUDA wheel
+# 而不是去 PyPI 拉 CPU-only 版本或尝试从源码编译
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+# explicit = true 意味着只有在 dependencies 中显式声明时才从这个源拉
+# 设为 false 允许所有包都能从这个源匹配
+explicit = false
+priority = 1
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+priority = 2
+
+# ============================================================
+# 开发依赖（可选，不影响训练环境）
+# ============================================================
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.0",
+    "jupyter>=1.0.0",
+]

@@ -249,7 +249,7 @@ def run_sft_experiment(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SFT Step-based Training")
     # 路径
-    parser.add_argument("--model_id", type=str, default="model/Qwen2.5-Math-1.5B")
+    parser.add_argument("--model_id", type=str, default="Qwen/Qwen3.5-4B-Base")
     parser.add_argument("--train_data_path", type=str, default="data/gsm8k-train.jsonl")
     parser.add_argument("--val_data_path", type=str, default="data/gsm8k-test.jsonl") 
     parser.add_argument("--prompt_path", type=str, default="GPT_LM/prompts/z1_zero.prompt")

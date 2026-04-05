@@ -1,14 +1,45 @@
-torch
-torchaudio
-torchvision
-einops
-wandb
-tokenizers
-xxhash
-transformers
-trl
-latex2sympy2-extended
-math-verify
-pylatexenc
-openai
-vllm
+# ============================================================
+# requirements.txt — 精确版本绑定
+# 适用环境：Python 3.11, CUDA 12.1+, Linux x86_64
+#
+# 核心约束说明：
+#   - vllm 0.8.5.post1 是与 torch 2.6.x 稳定共存的最后版本
+#   - transformers 必须 <5.0，因为 vllm 内部依赖 4.x API
+#   - tokenizers 版本由 transformers 传递依赖决定，显式锁定防止漂移
+#   - torchaudio / torchvision 必须与 torch 版本完全对齐
+# ============================================================
+
+# --- PyTorch 生态（版本必须三者对齐）---
+torch==2.6.0
+torchaudio==2.6.0
+torchvision==0.21.0
+
+# --- 推理引擎（核心，对 torch/transformers 版本最敏感）---
+vllm==0.8.5.post1
+
+# --- HuggingFace 生态 ---
+# transformers <5.0 是硬性上限，vllm 0.8.x 不兼容 transformers 5.x
+transformers==4.51.3
+# tokenizers 版本由 transformers 决定，显式锁定防止自动升级破坏 tokenizer 行为
+tokenizers==0.21.0
+
+# --- 训练工具 ---
+trl==0.15.2
+einops==0.8.2
+
+# --- 实验追踪 ---
+wandb==0.19.11
+
+# --- 数据 / 哈希工具 ---
+xxhash==3.5.0
+
+# --- 数学验证（用于 reward_fn）---
+latex2sympy2-extended==1.10.2
+math-verify==0.7.0
+pylatexenc==2.10
+
+# --- API 调用 ---
+openai==1.57.4
+
+# --- 数值计算（通常已被 torch 带入，显式锁定防止降级）---
+numpy>=1.26.0,<3.0.0
