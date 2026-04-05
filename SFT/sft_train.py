@@ -276,7 +276,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_eval_samples", type=int, default=100)
     
     # WandB
-    parser.add_argument("--wandb_project", type=str, default="cs336-sft")
+    parser.add_argument("--wandb_project", type=str, default="sft")
     parser.add_argument("--wandb_run_name", type=str, default=None)
 
     args = parser.parse_args()
