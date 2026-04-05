@@ -68,6 +68,9 @@ cd GPT_LM
 ```bash
 # 创建虚拟环境（推荐）
 python -m venv .venv
+#或者
+uv venv --python 3.11
+
 source .venv/bin/activate  # Linux/Mac
 # 或 .venv\Scripts\activate  # Windows
 
@@ -76,6 +79,9 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 # 安装其他依赖
 pip install numpy einops wandb tensorboard
+
+#也可以使用uv进行安装
+uv sync
 ```
 
 ### 验证安装
