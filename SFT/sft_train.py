@@ -247,12 +247,12 @@ def run_sft_experiment(args):
     wandb.finish()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="CS336 SFT Step-based Training")
+    parser = argparse.ArgumentParser(description="SFT Step-based Training")
     # 路径
     parser.add_argument("--model_id", type=str, default="model/Qwen2.5-Math-1.5B")
-    parser.add_argument("--train_data_path", type=str, default="data/gsm8k/train_sft_reason_gsm8k_raw.jsonl")
-    parser.add_argument("--val_data_path", type=str, default="data/gsm8k/test.jsonl") 
-    parser.add_argument("--prompt_path", type=str, default="cs336_alignment/prompts/r1_zero.prompt")
+    parser.add_argument("--train_data_path", type=str, default="data/gsm8k-train.jsonl")
+    parser.add_argument("--val_data_path", type=str, default="data/gsm8k-test.jsonl") 
+    parser.add_argument("--prompt_path", type=str, default="GPT_LM/prompts/z1_zero.prompt")
     parser.add_argument("--output_dir", type=str, default="result/checkpoints")
     
     # 训练参数
@@ -276,8 +276,8 @@ if __name__ == "__main__":
     parser.add_argument("--max_eval_samples", type=int, default=100)
     
     # WandB
-    parser.add_argument("--wandb_project", type=str, default="cs336-sft")
-    parser.add_argument("--wandb_run_name", type=str, default=None)
+    parser.add_argument("--wandb_project", type=str, default="sft")
+    parser.add_argument("--wandb_run_name", type=str, default="first try")
 
     args = parser.parse_args()
     run_sft_experiment(args)
