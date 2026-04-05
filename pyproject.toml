@@ -10,11 +10,10 @@
 #   你的 CUDA 是 12.8，PyTorch 官方不单独发布 cu128 wheel。
 #   cu124 wheel 可在 CUDA 12.8 上正常运行（向下兼容）。
 #
-# uv 索引策略说明（explicit 模式）：
-#   pytorch-cu124 设为 explicit=true，意味着只有在依赖里显式加
-#   { index = "pytorch-cu124" } 标注的包才从这个源拉。
-#   其余所有包照常从 PyPI 拉，避免 torch 源污染其他包的解析。
-#   这是解决 "found on X but not at requested version" 的标准做法。
+# 网络说明：
+#   默认源改为清华镜像，解决国内服务器访问 pypi.org 超时的问题。
+#   torch/torchvision/torchaudio 仍从 PyTorch 官方源拉（explicit 模式），
+#   其余所有包走清华镜像。
 # ============================================================
 
 [project]
@@ -29,20 +28,20 @@ dependencies = [
     "torchaudio==2.6.0",
     "torchvision==0.21.0",
 
-    # 推理引擎（PyPI 有预编译 wheel，不需要指定特殊源）
+    # 推理引擎
     "vllm==0.8.5.post1",
 
     # HuggingFace 生态
     # transformers <5.0 是硬性上限，vllm 0.8.x 不兼容 transformers 5.x
-    "transformers==4.51.3",
-    "tokenizers>=0.21.0",
+    "transformers==4.57.6",
+    "tokenizers==0.22.2",
 
     # 训练工具
     "trl==0.15.2",
     "einops==0.8.2",
 
     # 实验追踪
-    "wandb==0.19.11",
+    "wandb>=0.25.0",
 
     # 数据工具
     "xxhash==3.5.0",
@@ -62,6 +61,7 @@ dependencies = [
 # ============================================================
 # uv 索引配置
 # ============================================================
+
 # 清华镜像作为默认源（国内服务器首选）
 # 如果清华镜像也慢，可换备选：
 #   阿里云： https://mirrors.aliyun.com/pypi/simple
@@ -70,7 +70,7 @@ dependencies = [
 [[tool.uv.index]]
 name = "tuna"
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
- 
+
 # PyTorch cu124 源设为 explicit，只有被显式标注的包才从这里拉
 # CUDA 12.8 完全兼容 cu124 wheel，官方不单独发 cu128
 [[tool.uv.index]]
@@ -79,8 +79,7 @@ url = "https://download.pytorch.org/whl/cu124"
 explicit = true
 
 # ============================================================
-# 为 torch / torchaudio / torchvision 显式绑定到 pytorch-cu124 源
-# 这是 uv explicit 模式的核心：告诉 uv 这三个包去哪里找
+# torch / torchaudio / torchvision 显式绑定到 pytorch-cu124 源
 # ============================================================
 [tool.uv.sources]
 torch       = { index = "pytorch-cu124" }

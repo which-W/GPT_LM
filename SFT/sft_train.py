@@ -34,7 +34,8 @@ def init_vllm(model_id, device, seed, gpu_memory_utilization):
             dtype=torch.bfloat16,
             enable_prefix_caching=True, 
             gpu_memory_utilization=gpu_memory_utilization,
-            seed=seed
+            seed=seed,
+            max_model_len=4096,   # 加这一行，从 32768 降到 4096,在gsm8k数据集训练测试是完全足够的
         )
 
 def load_policy_into_vllm_instance(policy, llm):
@@ -250,10 +251,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SFT Step-based Training")
     # 路径
 
-    parser.add_argument("--model_id", type=str, default="Qwen/Qwen3.5-4B-Base")
+    parser.add_argument("--model_id", type=str, default="Qwen/Qwen3-4B-Base")
     parser.add_argument("--train_data_path", type=str, default="data/gsm8k-train.jsonl")
     parser.add_argument("--val_data_path", type=str, default="data/gsm8k-test.jsonl") 
-    parser.add_argument("--prompt_path", type=str, default="GPT_LM/prompts/z1_zero.prompt")
     parser.add_argument("--prompt_path", type=str, default="prompts/r1_zero.prompt")
     parser.add_argument("--output_dir", type=str, default="result/checkpoints")
     
@@ -263,7 +263,7 @@ if __name__ == "__main__":
     parser.add_argument("--micro_batch_size", type=int, default=1, help="Physical GPU Batch Size")
     parser.add_argument("--max_steps", type=int, default=200, help="Total training steps") # 替换 epochs
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--max_tokens", type=int, default=1024)
+    parser.add_argument("--max_tokens", type=int, default=512)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=None, help="显式指定累积步数")
     
     # 实验设置
@@ -279,9 +279,6 @@ if __name__ == "__main__":
     
     # WandB
     parser.add_argument("--wandb_project", type=str, default="sft")
-
-    parser.add_argument("--wandb_run_name", type=str, default="first try")
-
     parser.add_argument("--wandb_run_name", type=str, default=None)
 
 

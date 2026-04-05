@@ -212,3 +212,4 @@ __marimo__/
 /data/TinyStories-valid.bin 
 /wandb
 /checkpoints
+/flash-attention
