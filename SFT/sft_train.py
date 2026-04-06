@@ -268,7 +268,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SFT Step-based Training")
 
     # 路径
-    parser.add_argument("--model_id",        type=str, default="Qwen/Qwen3-4B-Base")
+    parser.add_argument("--model_id",        type=str, default="Qwen/Qwen2.5-Math-1.5B")
     parser.add_argument("--train_data_path", type=str, default="data/gsm8k-train.jsonl")
     parser.add_argument("--val_data_path",   type=str, default="data/gsm8k-val.jsonl")
     parser.add_argument("--prompt_path",     type=str, default="prompts/r1_zero.prompt")
