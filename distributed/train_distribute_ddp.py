@@ -13,7 +13,7 @@ from schedule import CosineAnnealingWarmupScheduler
 from cross_entropy import Cross_entropy
 from get_batch import get_batch
 from clip_gradient_noem import Clip_gradient_noem
-from checpoint_use import save_checkpoint, load_checkpoint
+from checkpoint_use import save_checkpoint, load_checkpoint
 
 
 def setup_distributed(rank, world_size, backend='nccl'):
