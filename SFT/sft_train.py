@@ -308,7 +308,6 @@ if __name__ == "__main__":
     parser.add_argument("--seed",             type=int,   default=42)
     parser.add_argument("--max_tokens",       type=int,   default=512,  help="vLLM 生成最大 token 数")
     parser.add_argument("--max_train_len",    type=int,   default=1024, help="训练序列最大截断长度")
-    # 【修复】default 改为 None，运行时自动从 batch_size/micro_batch_size 推导
     parser.add_argument("--gradient_accumulation_steps", type=int, default=None,
                         help="不填则自动推导为 batch_size // micro_batch_size")
 
