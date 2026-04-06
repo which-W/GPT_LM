@@ -14,7 +14,7 @@ from utils.parse_gsm8k_res import parse_gsm8k_response
 
 # ================= 配置区 =================
 VLLM_API_URL = "http://localhost:8010/v1"
-MODEL_NAME = "Qwen2.5-3B-Base"
+MODEL_NAME = "Qwen3-4B-Base"
 DATA_PATH = "data/gsm8k/test.jsonl"
 OUTPUT_FILE = f"result/gsm8k_{MODEL_NAME}_SFT_results.json"
 MAX_WORKERS = 100
