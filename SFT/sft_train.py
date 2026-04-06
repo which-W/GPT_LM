@@ -7,6 +7,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from vllm import LLM, SamplingParams
 from unittest.mock import patch
@@ -115,7 +116,16 @@ def run_sft_experiment(args):
     ).to(args.device)
     policy.gradient_checkpointing_enable()  # 【显存优化】用计算换显存
 
-    optimizer = AdamW(policy.parameters(), lr=args.lr)
+    optimizer = AdamW(policy.parameters(), lr=args.lr, weight_decay=0.01)
+
+    # 【修复3】Warmup + Cosine LR schedule，抑制早期 loss 剧烈抖动
+    warmup_steps   = max(1, int(args.max_steps * 0.05))
+    scheduler_warm = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_steps)
+    scheduler_cos  = CosineAnnealingLR(optimizer, T_max=args.max_steps - warmup_steps, eta_min=args.lr * 0.1)
+    scheduler      = SequentialLR(optimizer, schedulers=[scheduler_warm, scheduler_cos], milestones=[warmup_steps])
+
+    # 【修复2】Entropy 正则系数，防止 response entropy 快速坍缩
+    entropy_coeff = args.entropy_coeff
 
     print(f"Initializing vLLM on {args.vllm_device}...")
     vllm_inst = init_vllm(args.model_id, args.vllm_device, args.seed, args.vllm_gpu_util)
@@ -213,12 +223,22 @@ def run_sft_experiment(args):
                 avg_res_entropy    = token_entropy[current_res_mask].mean().item() if current_res_mask.any() else 0.0
                 avg_global_entropy = token_entropy[valid_token_mask].mean().item()
 
+            # 【修复1】用实际 response token 数归一化，消除序列长度差异导致的 loss 量级剧烈抖动
+            num_response_tokens = batch["response_mask"].sum().float().clamp(min=1.0)
+
             loss, _ = sft_microbatch_train_step(
                 policy_log_probs=log_probs,
                 response_mask=batch["response_mask"],
                 gradient_accumulation_steps=grad_accum_steps,
-                normalize_constant=1.0
+                normalize_constant=num_response_tokens.item()
             )
+
+            # 【修复2】Entropy 正则：在 response 位置鼓励保留多样性，防止 entropy 坍缩
+            # token_entropy 已在 no_grad 块中计算，需要重新计算可微版本
+            if entropy_coeff > 0 and current_res_mask.any():
+                res_entropy = compute_entropy(logits.detach())[current_res_mask].mean()
+                entropy_loss = -entropy_coeff * res_entropy / grad_accum_steps
+                entropy_loss.backward()
 
             accumulated_loss        += loss.item() * grad_accum_steps
             accumulated_entropy     += avg_global_entropy
@@ -232,12 +252,15 @@ def run_sft_experiment(args):
         torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
         optimizer.step()
         optimizer.zero_grad()
+        scheduler.step()  # 【修复3】更新 LR schedule
         progress_bar.update(1)
 
+        current_lr = scheduler.get_last_lr()[0]
         wandb.log({
             "train/loss":             accumulated_loss / grad_accum_steps,
             "train/global_entropy":   accumulated_entropy / grad_accum_steps,
             "train/response_entropy": accumulated_res_entropy / grad_accum_steps,
+            "train/lr":               current_lr,
             "train_step":             step + 1,
         })
 
@@ -275,7 +298,10 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir",      type=str, default="result/checkpoints")
 
     # 训练参数
-    parser.add_argument("--lr",               type=float, default=2e-5)
+    parser.add_argument("--lr",               type=float, default=5e-6,
+                        help="峰值学习率（原 2e-5 对 1.5B 模型偏大，改为 5e-6）")
+    parser.add_argument("--entropy_coeff",    type=float, default=0.02,
+                        help="Entropy 正则系数，防止 response entropy 坍缩；设 0 关闭")
     parser.add_argument("--batch_size",       type=int,   default=16)
     parser.add_argument("--micro_batch_size", type=int,   default=1)
     parser.add_argument("--max_steps",        type=int,   default=200)
