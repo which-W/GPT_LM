@@ -270,7 +270,7 @@ if __name__ == "__main__":
     # 路径
     parser.add_argument("--model_id",        type=str, default="Qwen/Qwen3-4B-Base")
     parser.add_argument("--train_data_path", type=str, default="data/gsm8k-train.jsonl")
-    parser.add_argument("--val_data_path",   type=str, default="data/gsm8k-test.jsonl")
+    parser.add_argument("--val_data_path",   type=str, default="data/gsm8k-val.jsonl")
     parser.add_argument("--prompt_path",     type=str, default="prompts/r1_zero.prompt")
     parser.add_argument("--output_dir",      type=str, default="result/checkpoints")
 
