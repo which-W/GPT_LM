@@ -16,7 +16,7 @@ class MLP(nn.Module):
         self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
 
         self.reset_parameters()
-    
+
     def reset_parameters(self):
         def _init_weights(tensor):
             k = 1 / tensor.size(1)
@@ -26,7 +26,7 @@ class MLP(nn.Module):
         _init_weights(self.up_proj.weight)
         _init_weights(self.gate_proj.weight)
         _init_weights(self.down_proj.weight)
- 
+
     def forward(self, x):
         gate_output = F.silu(self.gate_proj(x))
         up_output = self.up_proj(x)
@@ -38,7 +38,7 @@ class FinalProjection(nn.Module):
         super().__init__()
         self.in_features = hidden_size
         self.out_features = vocab_size
-        # Note: torch.nn.functional.linear performs XW^T + b so we exchange the order of dimensions
+        # 线性运算为 XW^T + b，因此权重按输出维度、输入维度存储
         self.weight = nn.Parameter(torch.empty(self.out_features, self.in_features))
         if bias:
             self.bias = nn.Parameter(torch.empty(self.out_features))
@@ -61,17 +61,17 @@ class FinalProjection(nn.Module):
 
 
 class DecoderLayer(nn.Module):
-    # RMSNorm -> Attention -> Residual -> RMSNorm -> MLP -> Residual
-    def __init__(self, 
+    # 归一化、注意力、残差、归一化、前馈网络、残差依次执行
+    def __init__(self,
                  config,
                  layer_idx,
                  device=None,
                  dtype=None):
         super().__init__()
-        
+
         self.layer_idx = layer_idx
-        
-        # RMSNorm layers
+
+        # 均方根归一化层
         self.input_layernorm = RMSNorm(
             d_model=config.hidden_size,
             eps=config.rms_norm_eps if hasattr(config, 'rms_norm_eps') else 1e-6,
@@ -84,8 +84,8 @@ class DecoderLayer(nn.Module):
             device=device,
             dtype=dtype
         )
-        
-        # Attention layer
+
+        # 注意力层
         self.attention = FlashAttentionWithTP(
             d_model=config.hidden_size,
             n_head=config.num_attention_heads,
@@ -97,35 +97,35 @@ class DecoderLayer(nn.Module):
             use_tp=True,
             async_all_reduce=False
         )
-        
-        # MLP layer
+
+        # 前馈网络层
         self.mlp = MLP(config)
 
     def forward(self, x, attention_mask=None, position_ids=None):
-        # Attention block with residual connection
+        # 带残差连接的注意力子层
         residual = x
         x = self.input_layernorm(x)
         x = self.attention(x, token_position=position_ids, attention_mask=attention_mask)
         x = residual + x
-        
-        # MLP block with residual connection
+
+        # 带残差连接的前馈子层
         residual = x
         x = self.post_attention_layernorm(x)
         x = self.mlp(x)
         x = residual + x
-        
+
         return x
 
 
 class Llama(nn.Module):
     def __init__(self, config) -> None:
         super().__init__()
-        # sanity check 
+        # 检查模型维度约束
         assert config.hidden_size % config.num_attention_heads == 0
         num_key_value_heads = config.num_key_value_heads if hasattr(config, 'num_key_value_heads') else config.num_attention_heads
-        assert config.num_attention_heads % num_key_value_heads == 0 
-        
-        # params
+        assert config.num_attention_heads % num_key_value_heads == 0
+
+        # 模型参数
         self.vocab_size = config.vocab_size
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
@@ -134,15 +134,15 @@ class Llama(nn.Module):
         self.max_position_embeddings = config.max_position_embeddings
         self.num_layers = config.num_hidden_layers
         self.model_config = config
-        
-        # modules
+
+        # 模型组件
         self.embedding = VocabParallelEmbedding(self.vocab_size, self.hidden_size)
         self.decoder_layers = nn.ModuleList([
             DecoderLayer(config, layer_idx=i) for i in range(self.num_layers)
         ])
         self.final_proj = FinalProjection(self.hidden_size, self.vocab_size, bias=False)
         self.final_norm = RMSNorm(
-            self.hidden_size, 
+            self.hidden_size,
             eps=config.rms_norm_eps if hasattr(config, 'rms_norm_eps') else 1e-6
         )
 
@@ -150,7 +150,7 @@ class Llama(nn.Module):
 
     def reset_parameters(self):
         self.embedding.reset_parameters()
-        
+
         for layer in self.decoder_layers:
             layer.input_layernorm.reset_parameters()
             layer.attention.reset_parameters()
@@ -162,11 +162,11 @@ class Llama(nn.Module):
 
     def forward(self, input_ids, attention_mask=None, position_ids=None):
         x = self.embedding(input_ids)
-        
+
         for layer in self.decoder_layers:
             x = layer(x, attention_mask=attention_mask, position_ids=position_ids)
-        
+
         x = self.final_norm(x)
         logits = self.final_proj(x)
-        
-        return logits  # [batch_size, seq_length, vocab_size]
+
+        return logits  # 张量形状或计算公式：[batch_size, seq_length, vocab_size]

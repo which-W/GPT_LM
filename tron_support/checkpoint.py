@@ -13,13 +13,7 @@ import tron_support.process_group_manager as pgm
 
 @contextlib.contextmanager
 def init_model_with_dematerialized_weights(include_buffers: bool = False):
-    """
-    From Accelerate library: https://github.com/huggingface/accelerate/blob/v0.11.0/src/accelerate/big_modeling.py#L254
-    Context manager that initializes models with empty weights (no memory allocation).
-    
-    Args:
-        include_buffers (bool): Whether to also skip buffer initialization.
-    """
+    "在元设备上创建参数，避免初始化时分配完整权重；include_buffers 控制是否同时跳过缓冲区分配。参考 Accelerate： https://github.com/huggingface/accelerate/blob/v0.11.0/src/accelerate/big_modeling.py#L254"
     old_register_parameter = nn.Module.register_parameter
     if include_buffers:
         old_register_buffer = nn.Module.register_buffer
@@ -47,196 +41,68 @@ def init_model_with_dematerialized_weights(include_buffers: bool = False):
             nn.Module.register_buffer = old_register_buffer
 
 def init_model_with_materialized_weights(model, model_config, save_dir):
-    #Initialize model with correct tensor shapes but random weights
-    initialization_manager = InitializationManager(model, model_config)
-    layer_names = initialization_manager.get_layer_names_in_sft_format()
-
-    # print(f"Rank {pgm.process_group_manager.global_rank} responsible for {len(layer_names)} layers")
-    
-    if len(layer_names) == 0:
-        raise Exception("Some ranks has no layers. There are too many ranks and not enough layers to distribute.")
-
-    state_dict = {}
-
+    """从单文件或分片权重加载参数，保留预训练输出头及全部权重。"""
+    manager = InitializationManager(model, model_config)
     index_path = os.path.join(save_dir, "model.safetensors.index.json")
-
-    if os.path.exists(index_path): # Handle sharded checkpoint
-        with open(index_path, 'r') as f:
-            index = json.load(f)
-        
-        for sft_name in layer_names:
-            shard_path = os.path.join(save_dir, index['weight_map'][sft_name])
-            with safe_open(shard_path, framework="pytorch", device="cpu") as f:
-                hf_name = initialization_manager.convert_safetensors_to_hf_name(sft_name)
-                tensor = f.get_tensor(sft_name)
-                tensor = initialization_manager.adjust_tensor_size(tensor, hf_name)
-                state_dict[hf_name] = tensor
-
-    else: # Handle single file checkpoint
-        safetensors_path = os.path.join(save_dir, "model.safetensors")
-        with safe_open(safetensors_path, framework="pytorch", device="cpu") as f:
-            if len(f.keys()) > len(layer_names):
-                print(f"rank {pgm.process_group_manager.global_rank}: Warning: Checkpoint has {len(f.keys())} layers but model only has {len(layer_names)} layers.")
-            
-            for sft_name in layer_names:
-                hf_name = initialization_manager.convert_safetensors_to_hf_name(sft_name)
-                tensor = f.get_tensor(sft_name)
-                tensor = initialization_manager.adjust_tensor_size(tensor, hf_name)
-                state_dict[hf_name] = tensor
-
-    # Force creation of lm_head (even if it is tie_embedding)
-    if pgm.process_group_manager.pp_is_last_stage or not isinstance(model, PipelineParallel):
-        vocab_size = model_config.vocab_size
-        if pgm.process_group_manager.tp_world_size > 1:
-            # For TP>1, the final_proj is already wrapped in ColumnParallel
-            # Just need to initialize state_dict with correct sharded size
-            vocab_per_rank = vocab_size // pgm.process_group_manager.tp_world_size
-            # Note: For ColumnParallelLinear, weight shape should be (output_size_per_partition, in_features)
-            state_dict['final_proj.weight'] = torch.zeros(vocab_per_rank, model_config.hidden_size)
+    if os.path.exists(index_path):
+        with open(index_path, encoding="utf-8") as f:
+            weight_map = json.load(f)["weight_map"]
+    else:
+        with safe_open(os.path.join(save_dir, "model.safetensors"), framework="pt", device="cpu") as f:
+            weight_map = {key: "model.safetensors" for key in f.keys()}
+    state = {}
+    for source_name in manager.get_layer_names_in_sft_format():
+        if source_name == "lm_head.weight" and source_name not in weight_map:
+            if not getattr(model_config, "tie_word_embeddings", False):
+                raise ValueError("非共享词嵌入模型缺少 lm_head.weight")
+            source_key = "model.embed_tokens.weight"
         else:
-            # For TP=1, create the full layer. FinalProjection expects weight shape (out_features, in_features)
-            # FinalProjection is needed so that we cann call .reset_parameters() on it
-            model.final_proj = FinalProjection(model_config.hidden_size, vocab_size, bias=False)
-            state_dict['final_proj.weight'] = torch.zeros(vocab_size, model_config.hidden_size)
-
-    # Synchronize across distributed processes and load weights
-    dist.barrier()
-    model.load_state_dict(state_dict, strict=True, assign=True)
-    dist.barrier()
-
+            source_key = source_name
+        if source_key not in weight_map:
+            raise ValueError(f"预训练权重缺少参数：{source_key}")
+        with safe_open(os.path.join(save_dir, weight_map[source_key]), framework="pt", device="cpu") as f:
+            target_name = manager.convert_safetensors_to_hf_name(source_name)
+            state[target_name] = manager.adjust_tensor_size(f.get_tensor(source_key), target_name)
+    model.load_state_dict(state, strict=True, assign=True)
     assert_no_meta_tensors(model)
-    # Initialize model parameters
-    initialization_manager.init_model_parameters()
-    dist.barrier()
     return model
 
+
 class InitializationManager:
+    """映射标准 LLaMA 权重名称，并按张量并行的进程编号切片。"""
     def __init__(self, model, model_config):
         self.model = model
         self.model_config = model_config
 
-    def init_model_parameters(self):
-        self.model.reset_parameters()
-
     def get_layer_names_in_sft_format(self):
-        """Get layer names in safetensors format based on model's layer distribution."""
-        decoder_components = [
-            "input_layernorm",
-            "mlp.down_proj",
-            "mlp.gate_proj",
-            "mlp.up_proj",
-            "post_attention_layernorm",
-            "self_attn.k_proj",
-            "self_attn.o_proj",
-            "self_attn.q_proj",
-            "self_attn.v_proj",
-        ]
-        
-        # Generate base layer names
-        layer_names = []
-        if isinstance(self.model, PipelineParallel):
-            base_names = [f"model.layers.{id}" for id in self.model.layer_distribution]
-        else:
-            base_names = [f"model.layers.{id}" for id in range(self.model_config.num_hidden_layers)]
-        
-        for layer in base_names:
-            for component in decoder_components:
-                layer_names.append(f"{layer}.{component}.weight")
-       
-        # Add special layers based on pipeline stage or non-PP case
-        # NOTE: Safetensors may have tied embeddings, but Picotron does not support it. We always create a new lm_head.
-        if isinstance(self.model, PipelineParallel):
-            if pgm.process_group_manager.pp_is_first_stage:
-                layer_names.insert(0, "model.embed_tokens.weight")
-            elif pgm.process_group_manager.pp_is_last_stage:
-                layer_names.extend(["model.norm.weight"])
-        else:
-            layer_names.insert(0, "model.embed_tokens.weight")
-            layer_names.extend(["model.norm.weight"])
-
-        return layer_names
+        components = ["input_layernorm", "mlp.down_proj", "mlp.gate_proj", "mlp.up_proj",
+                      "post_attention_layernorm", "self_attn.k_proj", "self_attn.o_proj",
+                      "self_attn.q_proj", "self_attn.v_proj"]
+        return (["model.embed_tokens.weight"] +
+                [f"model.layers.{i}.{component}.weight" for i in range(self.model_config.num_hidden_layers)
+                 for component in components] + ["model.norm.weight", "lm_head.weight"])
 
     def adjust_tensor_size(self, tensor, name):
-        """Resize tensor based on architecture changes and tensor parallelism."""
-        tp_rank = pgm.process_group_manager.tp_rank
-        tp_size = pgm.process_group_manager.tp_world_size
-        hidden_size = self.model_config.hidden_size
-        
-        # Handle embedding and final projection layers
-        if 'embedding.weight' in name or 'final_proj.weight' in name:
-            vocab_size = self.model_config.vocab_size
-            vocab_per_rank = vocab_size // tp_size
-            if tensor.shape[0] != vocab_per_rank:
-                start_idx = tp_rank * vocab_per_rank
-                end_idx = start_idx + vocab_per_rank
-                tensor = tensor[start_idx:end_idx, :]
-            return tensor
-
-        # Handle attention layers
-        if 'attention' in name:
-            head_dim = hidden_size // self.model_config.num_attention_heads
-            
-            if 'q_proj.weight' in name:
-                total_heads = self.model_config.num_attention_heads
-                heads_per_rank = total_heads // tp_size
-                target_dim = heads_per_rank * head_dim
-            elif 'k_proj.weight' in name or 'v_proj.weight' in name:
-                total_heads = self.model_config.num_key_value_heads
-                heads_per_rank = total_heads // tp_size
-                target_dim = heads_per_rank * head_dim
-            elif 'out_proj.weight' in name:
-                # For out_proj, we split along the second dimension
-                target_dim = tensor.shape[0]  # First dimension stays the same
-                if tensor.shape[1] != hidden_size // tp_size:
-                    tensor = tensor[:, (hidden_size // tp_size) * tp_rank:(hidden_size // tp_size) * (tp_rank + 1)]
-                return tensor
-            else:
-                return tensor
-                
-            if tensor.shape[0] != target_dim:
-                if target_dim > tensor.shape[0]:
-                    pad_tensor = torch.empty(target_dim - tensor.shape[0], tensor.shape[1], 
-                                        dtype=tensor.dtype, device=tensor.device)
-                    tensor = torch.cat([tensor, pad_tensor], dim=0)
-                else:
-                    tensor = tensor[:target_dim, :]
-
-        # Handle MLP layers
-        elif 'mlp' in name:
-            intermediate_size = self.model_config.intermediate_size
-            intermediate_size_per_rank = intermediate_size // tp_size
-            
-            if 'up_proj.weight' in name or 'gate_proj.weight' in name:
-                if tensor.shape[0] != intermediate_size_per_rank:
-                    start_idx = tp_rank * intermediate_size_per_rank
-                    end_idx = start_idx + intermediate_size_per_rank
-                    tensor = tensor[start_idx:end_idx, :]
-            elif 'down_proj.weight' in name:
-                if tensor.shape[1] != intermediate_size_per_rank:
-                    start_idx = tp_rank * intermediate_size_per_rank
-                    end_idx = start_idx + intermediate_size_per_rank
-                    tensor = tensor[:, start_idx:end_idx]
-                    
+        rank = pgm.process_group_manager.tp_rank
+        size = pgm.process_group_manager.tp_world_size
+        expected = dict(self.model.named_parameters())[name].shape
+        if size > 1 and tensor.shape != expected:
+            dim = 1 if ("attention.out_proj" in name or "mlp.down_proj" in name) else 0
+            if tensor.shape[dim] != expected[dim] * size:
+                raise ValueError(f"预训练参数 {name} 的形状与模型配置不匹配")
+            tensor = tensor.narrow(dim, rank * expected[dim], expected[dim]).contiguous()
+        if tensor.shape != expected:
+            raise ValueError(f"参数 {name}：权重形状 {tuple(tensor.shape)}，模型形状 {tuple(expected)}")
         return tensor
 
-    def convert_safetensors_to_hf_name(self, sft_name):
-        """Convert safetensors naming convention to HuggingFace naming convention."""
-        name_mapping = {
-            "model.": "",
-            "layers.": "decoder_layers.",
-            "embed_tokens": "embedding",
-            "self_attn.": "attention.",
-            "o_proj": "out_proj",
-            "lm_head": "final_proj",
-            "input_layernorm": "input_layernorm",
-            "post_attention_layernorm": "post_attention_layernorm",
-            r'^norm': 'final_norm'
-        }
-        
-        result = sft_name
-        for pattern, replacement in name_mapping.items():
-            result = re.sub(pattern, replacement, result)
-        return result
+    @staticmethod
+    def convert_safetensors_to_hf_name(name):
+        if name == "lm_head.weight":
+            return "final_proj.weight"
+        name = name.removeprefix("model.")
+        name = name.replace("layers.", "decoder_layers.").replace("embed_tokens", "embedding")
+        name = name.replace("self_attn.", "attention.").replace("o_proj", "out_proj")
+        return name.replace("norm.weight", "final_norm.weight") if name == "norm.weight" else name
 
 class CheckpointManager:
     def __init__(self):
@@ -253,10 +119,10 @@ class CheckpointManager:
         return os.path.join(out_dir, ckpt_name)
 
     def save_checkpoint(self, model, optimizer, trained_steps, trained_tokens, out_dir):
-        """Save the model/optimizer states/steps to a checkpoint file."""
+        "保存模型、优化器及训练进度。"
         path = self._get_checkpoint_path(out_dir)
-        
-        # Only DP/CP rank 0 will save the model, the weights are the same across all ranks
+
+        # 仅数据与上下文并行组的首进程保存相同的模型副本
         if self.dp_rank == 0 and self.cp_rank == 0:
             os.makedirs(out_dir, exist_ok=True)
             raw_model = model.module if self.cp_dp_world_size > 1 else model
@@ -269,19 +135,19 @@ class CheckpointManager:
             torch.save(checkpoint, path)
 
     def load_checkpoint(self, model, optimizer, out_dir):
-        """Load the model/optimizer states from the latest checkpoint. Assume the topology is the same."""
+        "在相同并行拓扑下恢复模型、优化器和训练进度。"
         path = self._get_checkpoint_path(out_dir)
-        
+
         if not os.path.exists(path):
             raise FileNotFoundError(f"Checkpoint not found at {path}")
-            
-        checkpoint = torch.load(path)
 
-        # Load model weights
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+
+        # 加载模型权重
         raw_model = model.module if self.cp_dp_world_size > 1 else model
         raw_model.load_state_dict(checkpoint['model'])
-        
-        # Load optimizer state
+
+        # 加载优化器状态
         optimizer.load_state_dict(checkpoint['optimizer'])
-        
+
         return checkpoint['trained_steps'], checkpoint['trained_tokens']

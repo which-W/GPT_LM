@@ -1,26 +1,7 @@
-# 4卡训练,使用bfloat16,梯度累积,WandB监控
-torchrun --nproc_per_node=4 train_distributed.py \
-    --distributed \
-    --train_data_path data/train.bin \
-    --valid_data_path data/val.bin \
-    --d_model 768 \
-    --n_head 12 \
-    --n_layer 12 \
-    --d_ff 3072 \
-    --vocab_size 50000 \
-    --max_seq_len 1024 \
-    --batch_size 8 \
-    --gradient_accumulation_steps 4 \
-    --max_lr 6e-4 \
-    --min_lr 6e-5 \
-    --warmup_steps 2000 \
-    --total_steps 50000 \
-    --dtype bfloat16 \
-    --max_grad_norm 1.0 \
-    --save_interval 5000 \
-    --eval_interval 1000 \
-    --log_interval 100 \
-    --use_wandb \
-    --wandb_project "transformer-large" \
-    --wandb_run_name "4gpu-bf16-bs128" \
-    --checkpoint_dir "./checkpoints"
+#!/usr/bin/env bash
+# 用进程启动器创建训练进程，训练程序不会再重复创建子进程。
+set -euo pipefail
+cd "$(dirname "$0")/.."
+PYTHON="${PYTHON:-.venv/bin/python}"
+NUM_GPUS="${NUM_GPUS:-1}"
+"$PYTHON" -m torch.distributed.run --nproc_per_node "$NUM_GPUS" -m distributed.train_distribute_ddp --distributed --train_data_path data/TinyStories-train.bin --valid_data_path data/TinyStories-valid.bin --data_dtype int64 "$@"

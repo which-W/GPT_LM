@@ -8,7 +8,7 @@ class RMSNorm(nn.Module):
     RMSNorm 相比 LayerNorm 更简单，只使用 RMS (Root Mean Square) 进行归一化，
     不减去均值，计算效率更高。常用于 LLaMA、GPT-NeoX 等大模型。
     
-    Args:
+    参数：
         d_model: 需要归一化的维度大小
         eps: 防止除零的小常数
         elementwise_affine: 是否使用可学习的缩放参数
@@ -25,19 +25,23 @@ class RMSNorm(nn.Module):
             self.weight = nn.Parameter(torch.ones(d_model,device=self.device,dtype=self.dtype))
         else:
             self.register_parameter('weight', None)
-    
+
     def forward(self, x):
         in_dtype = x.dtype
         #转为float32防止计算均值或者方差时溢出
         x_float = x.to(torch.float32)
         # 计算 RMS: sqrt(mean(x^2))
-        rms = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps)
-        
+        rms = torch.sqrt(torch.mean(x_float ** 2, dim=-1, keepdim=True) + self.eps)
+
         # 归一化
         result = x_float / rms
-        
+
         # 应用缩放
         if self.elementwise_affine:
             result = result * self.weight
-        
+
         return result.to(in_dtype)
+
+    def reset_parameters(self):
+        if self.weight is not None:
+            nn.init.ones_(self.weight)

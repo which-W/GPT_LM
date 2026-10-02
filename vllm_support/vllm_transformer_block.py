@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from vllm_support.vllm_attention import PagedCausalMultiHeadAttention
 from rmsnorm import RMSNorm
-from swiGLU import SwiGLU
+from swiGLU import SwiGLU, SiLUFFN
 
 class PagedTransformerBlock(nn.Module):
     """
@@ -23,10 +23,14 @@ class PagedTransformerBlock(nn.Module):
         num_kv_blocks: int = 1024,
         block_size: int = 16,
         device=None,
-        dtype=None
+        dtype=None,
+        use_rms_norm=True, norm_model="pre", ffn_type="swiglu",
     ):
         super().__init__()
-        
+        if norm_model not in ("pre", "post") or ffn_type not in ("swiglu", "silu"):
+            raise ValueError("无效的归一化位置或前馈类型")
+        self.norm_model = norm_model
+
         # 注意力模块（支持 PagedAttention）
         self.attention = PagedCausalMultiHeadAttention(
             d_model=d_model,
@@ -38,14 +42,14 @@ class PagedTransformerBlock(nn.Module):
             device=device,
             dtype=dtype,
         )
-        
+
         # RMSNorm 层
-        self.ln1 = RMSNorm(d_model=d_model, device=device, dtype=dtype)
-        self.ln2 = RMSNorm(d_model=d_model, device=device, dtype=dtype)
-        
+        self.ln1 = RMSNorm(d_model=d_model, device=device, dtype=dtype) if use_rms_norm else nn.Identity()
+        self.ln2 = RMSNorm(d_model=d_model, device=device, dtype=dtype) if use_rms_norm else nn.Identity()
+
         # 前馈网络（SwiGLU）
-        self.ffn = SwiGLU(d_model, d_ff, device=device, dtype=dtype)
-    
+        self.ffn = (SwiGLU if ffn_type == "swiglu" else SiLUFFN)(d_model, d_ff, device=device, dtype=dtype)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -59,7 +63,7 @@ class PagedTransformerBlock(nn.Module):
         """
         Pre-Norm Transformer Block
         
-        Args:
+        参数：
             x: 输入 [batch, seq_len, d_model]
             x_position: 位置索引
             is_prefill: 是否为 Prefill 阶段
@@ -69,27 +73,31 @@ class PagedTransformerBlock(nn.Module):
         """
         # 1. Attention 子层（Pre-Norm）
         x = x + self.attention(
-            self.ln1(x),
+            self.ln1(x) if self.norm_model == "pre" else x,
             token_position=x_position,
             is_prefill=is_prefill,
             block_tables=block_tables,
             slot_mapping=slot_mapping,
             context_lens=context_lens,
         )
-        
-        # 2. FFN 子层
-        x = x + self.ffn(self.ln2(x))
-        
+
+        if self.norm_model == "post":
+            x = self.ln1(x)
+        # 前馈子层与稠密模型使用相同的归一化顺序。
+        x = x + self.ffn(self.ln2(x) if self.norm_model == "pre" else x)
+        if self.norm_model == "post":
+            x = self.ln2(x)
+
         return x
-    
+
     def clear_cache(self):
         """清空 KV Cache"""
         self.attention.clear_cache()
-    
+
     def truncate_cache(self, length: int):
         """截断 KV Cache"""
-        pass
-    
+        raise NotImplementedError("分页缓存需要通过序列块表管理截断")
+
     def get_cache_seq_len(self) -> int:
         """获取缓存序列长度"""
         return 0

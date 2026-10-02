@@ -13,11 +13,11 @@ import tron_support.process_group_manager as pgm
 class MicroBatchDataLoader(DataLoader):
     def __init__(self, micro_batch_size, seq_length, dataset_name, tokenizer_name, num_workers, num_proc, grad_acc_steps, device, subset_name=None, split="train", num_samples=None, pin_memory=True):
         self.micro_batch_size = micro_batch_size
-        self.seq_length = seq_length 
+        self.seq_length = seq_length
         self.grad_acc_steps = grad_acc_steps
         self.global_batch_size = micro_batch_size * grad_acc_steps * pgm.process_group_manager.dp_world_size
         self.num_global_micro_batches = self.global_batch_size // self.micro_batch_size
-        
+
         self.seq_length_per_gpu = seq_length // pgm.process_group_manager.cp_world_size
         self.dataset = load_dataset(dataset_name, split=split, name=subset_name)
 
@@ -31,39 +31,39 @@ class MicroBatchDataLoader(DataLoader):
         print(f"rank {pgm.process_group_manager.global_rank}: Broadcasting tokenizer to all ranks", is_print_rank=pgm.process_group_manager.global_rank==0)
         dist.broadcast_object_list(objects, src=0, device=device)
         self.tokenizer = objects[0]
-        
+
         if num_samples:
             self.dataset = self.dataset.select(range(min(num_samples, len(self.dataset))))
-        
+
         # Windows 兼容性：在 Windows 上禁用多进程
         # Windows 的多进程需要 if __name__ == "__main__" 保护
         if platform.system() == "Windows" and num_proc > 1:
             print(f"Warning: Disabling multiprocessing on Windows (num_proc={num_proc} -> 1)")
             num_proc = 1
-        
-        # Tokenize and chunk the dataset
+
+        # 对数据集分词并切分为定长块
         self.tokenized_dataset = self.tokenize_dataset(self.dataset, "text", self.seq_length, num_proc)
-        
+
         self.sampler = DistributedSampler(
-            self.tokenized_dataset, 
-            num_replicas=pgm.process_group_manager.dp_world_size, 
-            rank=pgm.process_group_manager.dp_rank, 
+            self.tokenized_dataset,
+            num_replicas=pgm.process_group_manager.dp_world_size,
+            rank=pgm.process_group_manager.dp_rank,
             shuffle=False
         )
-        
+
         super().__init__(
             self.tokenized_dataset,
             batch_size=micro_batch_size,
-            collate_fn=self.collate_batch, 
-            pin_memory=pin_memory, 
-            num_workers=num_workers, 
-            sampler=self.sampler, 
+            collate_fn=self.collate_batch,
+            pin_memory=pin_memory,
+            num_workers=num_workers,
+            sampler=self.sampler,
             shuffle=False
         )
 
     @staticmethod
     def tokenizer_group_text(examples, tokenizer, sequence_length):
-        """Tokenize a list of texts and group them in chunks of sequence_length + 1"""
+        "对文本分词，并按序列长度加一的大小分组。"
         tokenized_text_batch = tokenizer.batch_encode_plus(
             examples,
             return_attention_mask=False,
@@ -83,8 +83,8 @@ class MicroBatchDataLoader(DataLoader):
         return result
 
     def tokenize_dataset(self, dataset, text_column_name, sequence_length, num_proc):
-        """Tokenize the dataset and group texts in chunks of sequence_length + 1"""
-        # Create a partial function with fixed arguments
+        "对数据集分词并切分为训练序列。"
+        # 固定部分参数后创建回调函数
         tokenizer_func = partial(
             self.tokenizer_group_text,
             tokenizer=self.tokenizer,
@@ -113,15 +113,15 @@ class MicroBatchDataLoader(DataLoader):
         end_idx = start_idx + self.seq_length_per_gpu
         input_ids = batch_input_ids[:, start_idx:end_idx].contiguous()
         target_ids = batch_input_ids[:, start_idx+1:end_idx+1].contiguous()
-        position_ids = torch.arange(start_idx, end_idx, dtype=torch.long).unsqueeze(0).expand(batch_size, -1).contiguous() 
-        
+        position_ids = torch.arange(start_idx, end_idx, dtype=torch.long).unsqueeze(0).expand(batch_size, -1).contiguous()
+
         return {
             "input_ids": input_ids,
             "target_ids": target_ids,
             "position_ids": position_ids,
             "hidden_states": None
         }
-    
+
     def __iter__(self):
         if self._iterator is None:
             self._iterator = super().__iter__()
@@ -133,7 +133,7 @@ class MicroBatchDataLoader(DataLoader):
         try:
             batch = next(self._iterator)
         except StopIteration:
-            # Reinitialize the sampler and iterator
+            # 重新初始化采样器和迭代器
             self.sampler.set_epoch(self.sampler.epoch + 1 if hasattr(self.sampler, 'epoch') else 0)
             self._iterator = super().__iter__()
             try:

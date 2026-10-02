@@ -9,9 +9,7 @@ from tqdm import tqdm
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from vllm import LLM, SamplingParams
-from unittest.mock import patch
-os.environ["VLLM_USE_V1"] = "0"  # 强制使用 V0 引擎，保留 model_executor 路径
+from utils.post_training import SamplingParams, init_evaluator, load_policy_into_vllm_instance
 # 【显存优化】减少碎片
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -42,45 +40,18 @@ def build_r1_response(answer_str: str) -> str:
         return f"<think>\n\n</think> <answer>{answer_str.strip()}</answer>"
 
 
-def init_vllm(model_id, device, seed, gpu_memory_utilization):
-    """初始化 vLLM 实例"""
-    with patch("torch.distributed.get_world_size", return_value=1), \
-         patch("vllm.worker.worker.Worker._assert_memory_footprint_increased_during_profiling", return_value=None):
-        return LLM(
-            model=model_id,
-            device=device,
-            dtype=torch.bfloat16,
-            enable_prefix_caching=True,
-            gpu_memory_utilization=gpu_memory_utilization,
-            seed=seed,
-            max_model_len=2048,  # 【显存优化】GSM8K 用 2048 完全够
-        )
-
-
-def load_policy_into_vllm_instance(policy, llm):
-    """同步权重到 vLLM（兼容 vllm 0.8.5 V1 引擎）"""
-    state_dict = policy.state_dict()
-    
-    # vllm 0.8.5 V1 引擎的访问路径
-    llm_model = (
-        llm.llm_engine
-           .model_executor
-           .driver_worker  
-           .worker
-           .model_runner
-           .model
-    )
-    llm_model.load_weights(state_dict.items())
-    print("\n[Sync] Policy weights synced to vLLM.")
-
 def get_batch(tokenized_data, batch_size, device):
     """从预处理好的数据中随机采样一个 Batch（Infinite Dataloader）"""
     total_len = len(tokenized_data["input_ids"])
-    batch_indices = random.sample(range(total_len), batch_size)
+    if total_len == 0:
+        raise ValueError("训练数据为空")
+    batch_indices = np.random.choice(total_len, batch_size, replace=total_len < batch_size)
     return {
         "input_ids":     tokenized_data["input_ids"][batch_indices].to(device),
         "labels":        tokenized_data["labels"][batch_indices].to(device),
         "response_mask": tokenized_data["response_mask"][batch_indices].to(device),
+        "attention_mask": tokenized_data["attention_mask"][batch_indices].to(device),
+        "label_mask": tokenized_data["label_mask"][batch_indices].to(device),
     }
 
 
@@ -89,17 +60,26 @@ def get_batch(tokenized_data, batch_size, device):
 # ==========================================
 
 def run_sft_experiment(args):
+    if args.micro_batch_size < 1 or args.batch_size < args.micro_batch_size:
+        raise ValueError("batch_size 必须不小于正数 micro_batch_size")
+    if not args.gradient_accumulation_steps and args.batch_size % args.micro_batch_size:
+        raise ValueError("自动推导梯度累积次数时，batch_size 必须能整除 micro_batch_size")
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
 
     # 【修复】gradient_accumulation_steps 默认 None/True 时自动推导
-    if not args.gradient_accumulation_steps:
+    if args.gradient_accumulation_steps is None:
         args.gradient_accumulation_steps = args.batch_size // args.micro_batch_size
+    if args.gradient_accumulation_steps < 1 or args.max_steps < 2:
+        raise ValueError("梯度累积次数必须为正数，max_steps 至少为 2")
     grad_accum_steps = args.gradient_accumulation_steps
     print(f"[Config] grad_accum_steps = {grad_accum_steps}")
 
     wandb.init(project=args.wandb_project, name=args.wandb_run_name, config=vars(args))
 
     # 加载 Prompt 模版（验证集 & 训练集共用）
-    with open(args.prompt_path, "r") as f:
+    with open(args.prompt_path, "r", encoding="utf-8") as f:
         r1_template = f.read().strip()
 
     # ── 模型与分词器 ──────────────────────────────────────────────
@@ -112,7 +92,7 @@ def run_sft_experiment(args):
         args.model_id,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        attn_implementation="flash_attention_2"
+        attn_implementation=args.attn_implementation
     ).to(args.device)
     policy.gradient_checkpointing_enable()  # 【显存优化】用计算换显存
 
@@ -127,13 +107,13 @@ def run_sft_experiment(args):
     # 【修复2】Entropy 正则系数，防止 response entropy 快速坍缩
     entropy_coeff = args.entropy_coeff
 
-    print(f"Initializing vLLM on {args.vllm_device}...")
-    vllm_inst = init_vllm(args.model_id, args.vllm_device, args.seed, args.vllm_gpu_util)
+    print(f"评估后端：{args.eval_backend}")
+    vllm_inst = init_evaluator(policy, tokenizer, args)
 
     # ── 训练数据加载与预处理 ──────────────────────────────────────
     print(f"Loading training data from {args.train_data_path}...")
     raw_train_data = []
-    with open(args.train_data_path, "r") as f:
+    with open(args.train_data_path, "r", encoding="utf-8") as f:
         for line in f:
             raw_train_data.append(json.loads(line))
 
@@ -168,7 +148,7 @@ def run_sft_experiment(args):
     # ── 验证集 ────────────────────────────────────────────────────
     print(f"Loading validation data from {args.val_data_path}...")
     val_prompts, val_ground_truths = [], []
-    with open(args.val_data_path, "r") as f:
+    with open(args.val_data_path, "r", encoding="utf-8") as f:
         for i, line in enumerate(f):
             if i >= args.max_eval_samples:
                 break
@@ -208,17 +188,18 @@ def run_sft_experiment(args):
         # ── 梯度累积循环 ──
         for _ in range(grad_accum_steps):
             batch  = get_batch(tokenized_train_data, args.micro_batch_size, args.device)
-            logits = policy(batch["input_ids"]).logits  # (B, L, V)
+            logits = policy(batch["input_ids"], attention_mask=batch["attention_mask"], use_cache=False).logits  # 形状为 [B, L, V]
+            differentiable_entropy = compute_entropy(logits) if entropy_coeff > 0 else None
 
             # log-probs（显存高效写法，避免保留整个 log_softmax 矩阵）
-            lse           = torch.logsumexp(logits, dim=-1)
+            lse           = torch.logsumexp(logits.float(), dim=-1)
             target_logits = torch.gather(logits, -1, batch["labels"].unsqueeze(-1)).squeeze(-1)
             log_probs     = target_logits - lse
 
             # 熵监控（no_grad，不占梯度图）
             with torch.no_grad():
                 token_entropy      = compute_entropy(logits)
-                valid_token_mask   = (batch["labels"] != tokenizer.pad_token_id)
+                valid_token_mask   = batch["label_mask"].bool()
                 current_res_mask   = batch["response_mask"].bool() & valid_token_mask
                 avg_res_entropy    = token_entropy[current_res_mask].mean().item() if current_res_mask.any() else 0.0
                 avg_global_entropy = token_entropy[valid_token_mask].mean().item()
@@ -230,22 +211,19 @@ def run_sft_experiment(args):
                 policy_log_probs=log_probs,
                 response_mask=batch["response_mask"],
                 gradient_accumulation_steps=grad_accum_steps,
-                normalize_constant=num_response_tokens.item()
+                normalize_constant=num_response_tokens.item(),
+                token_entropy=differentiable_entropy,
+                entropy_coeff=entropy_coeff,
             )
 
-            # 【修复2】Entropy 正则：在 response 位置鼓励保留多样性，防止 entropy 坍缩
-            # token_entropy 已在 no_grad 块中计算，需要重新计算可微版本
-            if entropy_coeff > 0 and current_res_mask.any():
-                res_entropy = compute_entropy(logits.detach())[current_res_mask].mean()
-                entropy_loss = -entropy_coeff * res_entropy / grad_accum_steps
-                entropy_loss.backward()
+            # 监督损失与熵正则共用计算图，已在一次反向传播中完成更新。
 
             accumulated_loss        += loss.item() * grad_accum_steps
             accumulated_entropy     += avg_global_entropy
             accumulated_res_entropy += avg_res_entropy
 
             # 【显存优化】backward 后立即释放中间张量，防止多个 micro-batch 同时堆积
-            del logits, lse, target_logits, log_probs, token_entropy
+            del logits, lse, target_logits, log_probs, token_entropy, differentiable_entropy
             torch.cuda.empty_cache()
 
         # ── 优化器更新 ──
@@ -317,14 +295,16 @@ if __name__ == "__main__":
 
     # 硬件与评估
     parser.add_argument("--device",           type=str,   default="cuda:0")
-    parser.add_argument("--vllm_device",      type=str,   default="cuda:1")
+    parser.add_argument("--vllm_device",      type=str,   default="cuda:0")
     parser.add_argument("--vllm_gpu_util",    type=float, default=0.45)
     parser.add_argument("--eval_every_steps", type=int,   default=20)
     parser.add_argument("--max_eval_samples", type=int,   default=100)
 
-    # WandB
+    # 实验日志配置
     parser.add_argument("--wandb_project",  type=str, default="sft")
     parser.add_argument("--wandb_run_name", type=str, default=None)
 
+    parser.add_argument("--eval_backend", choices=["transformers", "vllm"], default="transformers")
+    parser.add_argument("--attn_implementation", choices=["sdpa", "eager", "flash_attention_2"], default="sdpa")
     args = parser.parse_args()
     run_sft_experiment(args)

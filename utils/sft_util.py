@@ -1,11 +1,13 @@
+from __future__ import annotations
 import torch
-from typing import List, Dict, Callable, Optional
+from typing import List, Dict, Callable, Optional, TYPE_CHECKING
 from transformers import PreTrainedTokenizer
 import torch.nn.functional as F
 from transformers import PreTrainedModel
 import numpy as np
 import wandb
-from vllm import LLM, SamplingParams
+if TYPE_CHECKING:
+    from vllm import LLM, SamplingParams
 
 
 def tokenize_prompt_and_output(
@@ -23,8 +25,13 @@ def tokenize_prompt_and_output(
     all_input_ids      = []
     all_response_masks = []
     all_lengths        = []
+    if not prompt_strs or len(prompt_strs) != len(output_strs):
+        raise ValueError("提示词与回答必须非空且数量相同")
 
     for p_str, o_str in zip(prompt_strs, output_strs):
+        # 模板已提供起始标签时，回答只补充标签后的内容。
+        if p_str.rstrip().endswith("<think>") and o_str.lstrip().startswith("<think>"):
+            o_str = o_str.lstrip()[len("<think>"):]
         p_ids = tokenizer.encode(p_str, add_special_tokens=False)
         o_ids = tokenizer.encode(o_str, add_special_tokens=False)
 
@@ -36,6 +43,8 @@ def tokenize_prompt_and_output(
             combined_ids = combined_ids[:max_length]
             mask         = mask[:max_length]
 
+        if len(combined_ids) < 2 or not any(mask[1:]):
+            raise ValueError("样本截断后没有可预测的回答令牌，请增大 max_length 或缩短提示词")
         all_input_ids.append(combined_ids)
         all_response_masks.append(mask)
         all_lengths.append(len(combined_ids))
@@ -46,11 +55,13 @@ def tokenize_prompt_and_output(
 
     padded_input_ids = torch.full((batch_size, max_len), pad_id, dtype=torch.long)
     padded_masks     = torch.zeros((batch_size, max_len), dtype=torch.long)
+    attention_masks = torch.zeros((batch_size, max_len), dtype=torch.long)
 
     for i, (ids, m) in enumerate(zip(all_input_ids, all_response_masks)):
         length = len(ids)
         padded_input_ids[i, :length] = torch.tensor(ids)
         padded_masks[i, :length]     = torch.tensor(m)
+        attention_masks[i, :length] = 1
 
     # Shift：input 取前 N-1，labels / mask 取后 N-1
     final_input_ids     = padded_input_ids[:, :-1]
@@ -61,6 +72,8 @@ def tokenize_prompt_and_output(
         "input_ids":     final_input_ids,
         "labels":        final_labels,
         "response_mask": final_response_mask,
+        "attention_mask": attention_masks[:, :-1],
+        "label_mask": attention_masks[:, 1:],
     }
 
 
@@ -69,11 +82,12 @@ def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     计算每个位置的 next-token 预测熵。
     H = logsumexp(z) - sum(p_i * z_i)
 
-    Args:
+    参数：
         logits: (batch_size, seq_len, vocab_size)
-    Returns:
+    返回：
         entropy: (batch_size, seq_len)
     """
+    logits = logits.float()
     lse        = torch.logsumexp(logits, dim=-1)
     probs      = F.softmax(logits, dim=-1)
     exp_logits = torch.sum(probs * logits, dim=-1)
@@ -114,14 +128,27 @@ def sft_microbatch_train_step(
     policy_log_probs: torch.Tensor,
     response_mask: torch.Tensor,
     gradient_accumulation_steps: int,
-    normalize_constant: float = 1.0,
+    normalize_constant: float | None = None,
+    token_entropy: torch.Tensor | None = None,
+    entropy_coeff: float = 0.0,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """单次 micro-batch SFT 更新（含反向传播）。"""
-    batch_size    = policy_log_probs.shape[0]
+    if gradient_accumulation_steps < 1:
+        raise ValueError("梯度累积次数必须大于零")
+    if normalize_constant is None:
+        normalize_constant = response_mask.sum().clamp(min=1).item()
+    if normalize_constant <= 0:
+        raise ValueError("损失归一化常数必须大于零")
     nll_per_token = -policy_log_probs
 
     total_masked_loss    = masked_normalize(nll_per_token, response_mask, normalize_constant, dim=None)
-    microbatch_loss_mean = total_masked_loss / batch_size
+    microbatch_loss_mean = total_masked_loss
+    if entropy_coeff:
+        if token_entropy is None or not token_entropy.requires_grad:
+            raise ValueError("熵正则需要保留梯度的 token_entropy")
+        microbatch_loss_mean = microbatch_loss_mean - entropy_coeff * masked_normalize(
+            token_entropy, response_mask, normalize_constant, dim=None
+        )
     scaled_loss          = microbatch_loss_mean / gradient_accumulation_steps
 
     scaled_loss.backward()
@@ -138,6 +165,8 @@ def log_generations(
     log_prefix: str = "eval",
 ) -> Dict[str, float]:
     """生成回答并记录评估指标到 wandb。"""
+    if not prompts or len(prompts) != len(ground_truths):
+        raise ValueError("评估提示词和标准答案必须非空且数量相同")
     outputs = vllm_model.generate(prompts, sampling_params)
 
     table_data = []

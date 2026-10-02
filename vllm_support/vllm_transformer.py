@@ -12,7 +12,7 @@ from rmsnorm import RMSNorm
 class PagedTransformerLM(nn.Module):
     """
     支持 PagedAttention 的 Transformer 语言模型
-    
+
     使用模式:
     1. 训练模式:
        logits = model(tokens, is_prefill=True, block_tables=None)
@@ -43,16 +43,19 @@ class PagedTransformerLM(nn.Module):
         ffn_type: str = "swiglu",
     ):
         super().__init__()
+        self.config = dict(d_model=d_model, n_head=n_head, vocab_size=vocab_size, max_seq_len=max_seq_len,
+                           d_ff=d_ff, theta=theta, n_layer=n_layer, use_rms_norm=use_rms_norm,
+                           norm_model=norm_model, ffn_type=ffn_type)
         self.device = device
         self.dtype = dtype
         self.num_kv_blocks = num_kv_blocks
         self.block_size = block_size
-        
+
         factory_pra = {"device": device, "dtype": dtype}
-        
+
         # 初始化 embedding 层
         self.embedding = CustomEmbedding(vocab_size, d_model, **factory_pra)
-        
+
         # 堆叠 transformer block
         self.layers = nn.ModuleList([
             PagedTransformerBlock(
@@ -63,23 +66,24 @@ class PagedTransformerLM(nn.Module):
                 theta=theta,
                 num_kv_blocks=num_kv_blocks,
                 block_size=block_size,
+                use_rms_norm=use_rms_norm, norm_model=norm_model, ffn_type=ffn_type,
                 **factory_pra,
             )
             for _ in range(n_layer)
         ])
-        
+
         # 最终输出层
         if use_rms_norm:
             self.ln_final = RMSNorm(d_model, **factory_pra)
         else:
             self.ln_final = nn.Identity()
-        
+
         # 输出投影到词表
         self.ln_output = nn.Linear(d_model, vocab_size, **factory_pra)
-        
+
         # 位置计数器(旧cache)
         self._current_pos = 0
-    
+
     def forward(
         self,
         token_ids: torch.Tensor,
@@ -92,7 +96,7 @@ class PagedTransformerLM(nn.Module):
         """
         统一的前向传播
         
-        Args:
+        参数：
             token_ids: [batch, seq_len]
             is_prefill: True=Prefill阶段,False=Decode阶段
             block_tables: [batch, max_num_blocks] 物理块映射表
@@ -100,7 +104,9 @@ class PagedTransformerLM(nn.Module):
             context_lens: [batch] 每个序列的上下文长度
         """
         b, s = token_ids.shape
-        
+        if s < 1 or s > self.config["max_seq_len"] or (not is_prefill and context_lens.max().item() + s > self.config["max_seq_len"]):
+            raise ValueError("输入超出模型上下文范围")
+
         # 获取位置编码
         # vLLM 模式或训练模式
         if context_lens is not None and not is_prefill:
@@ -109,35 +115,35 @@ class PagedTransformerLM(nn.Module):
         else:
             # Prefill 或训练: 从0开始的顺序位置
             token_position = torch.arange(
-                s, device=self.device, dtype=torch.long
+                s, device=token_ids.device, dtype=torch.long
             ).unsqueeze(0).expand(b, s)
-        
-        # Embedding
+
+        # 词嵌入层
         x = self.embedding(token_ids)
-        
+
         # 逐层通过 block
         for layer in self.layers:
             x = layer(
-                x, 
+                x,
                 token_position,
                 is_prefill=is_prefill,
                 block_tables=block_tables,
                 slot_mapping=slot_mapping,
                 context_lens=context_lens,
             )
-        
+
         # 最终归一化
         x = self.ln_final(x)
-        
+
         # 返回投射到词表空间的 logits
         return self.ln_output(x)
-    
+
     def clear_cache(self):
         """清空所有层的 KV Cache"""
         for layer in self.layers:
             layer.clear_cache()
         self._current_pos = 0
-    
+
     def truncate_cache(self, length: int):
         """截断 KV Cache 到指定长度"""
         for layer in self.layers:

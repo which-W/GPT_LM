@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from attention import CauseMutiHeadAttention
 from rmsnorm import RMSNorm
-from swiGLU import SwiGLU
+from swiGLU import SwiGLU, SiLUFFN
 class TransformerBlock(nn.Module):
     def __init__(self,
                  d_model:int,
@@ -11,8 +11,14 @@ class TransformerBlock(nn.Module):
                  max_seq_len:int,
                  theta:float,
                  device=None,
-                 dtype=None):
+                 dtype=None,
+                 use_rms_norm=True,
+                 norm_model="pre",
+                 ffn_type="swiglu"):
         super().__init__()
+        if norm_model not in ("pre", "post") or ffn_type not in ("swiglu", "silu"):
+            raise ValueError("Invalid normalization placement or FFN type")
+        self.norm_model = norm_model
         #初始化因果注意力模块
         self.attention = CauseMutiHeadAttention(
             d_model=d_model,
@@ -23,36 +29,41 @@ class TransformerBlock(nn.Module):
             dtype=dtype,
         )
         #初始化两个RMSNorm层，用于attention和FNN
-        self.ln1 = RMSNorm(d_model=d_model,device=device,dtype=dtype)
-        self.ln2 = RMSNorm(d_model=d_model,device=device,dtype=dtype)
-        
+        self.ln1 = RMSNorm(d_model=d_model,device=device,dtype=dtype) if use_rms_norm else nn.Identity()
+        self.ln2 = RMSNorm(d_model=d_model,device=device,dtype=dtype) if use_rms_norm else nn.Identity()
+
         #初始化前反馈网络（SWiGLU）
-        self.ffn = SwiGLU(d_model,d_ff,device=device,dtype=dtype)
-        
+        ffn_class = SwiGLU if ffn_type == "swiglu" else SiLUFFN
+        self.ffn = ffn_class(d_model,d_ff,device=device,dtype=dtype)
+
     def forward(self,x:torch.Tensor,
                 x_position:torch.Tensor,
                 use_cache: bool = False,
-                start_pos: int = 0,):
+                start_pos: int = 0,
+                attention_mask: torch.Tensor = None,):
+        if self.norm_model == "post":
+            x = self.ln1(x + self.attention(x, token_position=x_position, use_cache=use_cache, start_pos=start_pos, attention_mask=attention_mask))
+            return self.ln2(x + self.ffn(x))
         #1.attention子层(pre-norm结构）
         #x被分成两路，一路直接传走（残差），一路进入norm + attention
-        x = x + self.attention(self.ln1(x),token_position = x_position, use_cache=use_cache,start_pos=start_pos)
+        x = x + self.attention(self.ln1(x),token_position = x_position, use_cache=use_cache,start_pos=start_pos, attention_mask=attention_mask)
         #2.FFN子层
         #x被分成两路，一路直接传走（残差），一路进入norm + ffn
         x = x + self.ffn(self.ln2(x))
-        
+
         return x
-    
+
     def clear_cache(self):
         """清空该层的 KV Cache"""
         self.attention.clear_cache()
-    
+
     def truncate_cache(self, length: int):
         """传递截断指令给 attention 层"""
         self.attention.truncate_cache(length)
     def get_cache_seq_len(self) -> int:
         """获取缓存序列长度"""
         return self.attention.get_cache_seq_len()
-    
+
 
 class TransformerBlock_AttenRes(nn.Module):
     """
@@ -113,14 +124,14 @@ class TransformerBlock_AttenRes(nn.Module):
         start_pos: int = 0,
     ):
         """
-        Args:
+        参数：
             x            : 输入隐状态 [B, S, D]
             x_position   : token 位置索引 [B, S]
             attn_stream  : 跨层注意力累积流 [B, S, D]，初始为 zeros_like(x)
             use_cache    : 是否使用 KV Cache
             start_pos    : KV Cache 起始位置
 
-        Returns:
+        返回：
             x            : 更新后的隐状态 [B, S, D]
             attn_stream  : 更新后的注意力累积流 [B, S, D]（传给下一层）
         """
@@ -157,23 +168,3 @@ class TransformerBlock_AttenRes(nn.Module):
     def get_cache_seq_len(self) -> int:
         """获取当前缓存序列长度"""
         return self.attention.get_cache_seq_len()
-
-
-# ======================================================================
-# 使用示例（在模型主干中如何串联多个 TransformerBlock_AttenRes）
-# ======================================================================
-# 
-# class transformer(nn.Module):
-#     def __init__(self, ...):
-#         self.layers = nn.ModuleList([TransformerBlock_AttenRes(...) for _ in range(n_layers)])
-#
-#     def forward(self, x, x_position, use_cache=False, start_pos=0):
-#         # attn_stream 初始化为全零，形状与 x 相同
-#         attn_stream = torch.zeros_like(x)
-#
-#         for layer in self.layers:
-#             x, attn_stream = layer(
-#                 x, x_position, attn_stream,
-#                 use_cache=use_cache, start_pos=start_pos,
-#             )
-#         return x

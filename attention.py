@@ -1,6 +1,6 @@
 from typing import Optional, Tuple
-import torch 
-import math 
+import torch
+import math
 from softmax import StableSoftmax
 from torch import nn
 from einops import rearrange
@@ -13,60 +13,60 @@ def scaled_dot_product_attention(
     V:torch.Tensor,
     mask: torch.Tensor = None
 ):
-    """
-        Q:[..., N ,d_k]
-        K:[..., m ,d_k]
-        V:[..., m ,d_v]
-    """
+    "计算缩放点积注意力；查询、键和值的最后两维为序列和通道。"
     #获取d_k
     d_k = Q.size(-1)
-    
+
     #计算相似度分数,形成打分表
     scores = torch.einsum('...nk,...mk -> ...nm',Q,K) / math.sqrt(d_k)
     #应用mask掩码
     if mask is not None:
         scores = scores.masked_fill(mask == False, float('-inf'))
-        
+
     #计算注意力权重(归一化)
     #dim=-1 对应的是每一个Q对于K的分布
     softmax = StableSoftmax(dim=-1)
     probs = softmax(scores)
-    
+
     #加权求和得到输出
     output = torch.einsum('...nm, ...mk -> ...nk', probs ,V)
-    
+
     return output
 #链式KVCache
 class KVCache:
     """
     KV Cache 用于存储和管理 Key-Value 缓存
-    
+
     在自回归生成时:
     - 首次输入: 缓存所有 K, V
     - 后续输入: 只计算新token的 K, V,拼接到缓存中
     """
-    
+
     def __init__(self):
-        self.k_cache: Optional[torch.Tensor] = None  # [batch, n_head, seq_len, d_k]
-        self.v_cache: Optional[torch.Tensor] = None  # [batch, n_head, seq_len, d_k]
-        
+        self.k_cache: Optional[torch.Tensor] = None  # 张量形状或计算公式：[batch, n_head, seq_len, d_k]
+        self.v_cache: Optional[torch.Tensor] = None  # 张量形状或计算公式：[batch, n_head, seq_len, d_k]
+
     def update(
-        self, 
-        k: torch.Tensor, 
+        self,
+        k: torch.Tensor,
         v: torch.Tensor,
         start_pos: int = 0
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         更新缓存并返回完整的 K, V
         
-        Args:
+        参数：
             k: 新的 Key [batch, n_head, seq_len, d_k]
             v: 新的 Value [batch, n_head, seq_len, d_k]
             start_pos: 新token在序列中的起始位置
             
-        Returns:
+        返回：
             完整的 K, V (包含缓存的历史部分)
         """
+        if start_pos != self.get_seq_len():
+            raise ValueError("缓存位置不连续，请先清空或截断缓存")
+        if self.k_cache is not None and k.shape[:2] != self.k_cache.shape[:2]:
+            raise ValueError("缓存的批次或注意力头数发生变化")
         if self.k_cache is None:
             # 首次调用,直接缓存
             self.k_cache = k
@@ -75,14 +75,16 @@ class KVCache:
             # 拼接新的 K, V 到缓存
             self.k_cache = torch.cat([self.k_cache, k], dim=2)
             self.v_cache = torch.cat([self.v_cache, v], dim=2)
-            
+
         return self.k_cache, self.v_cache
     def truncate(self, max_len: int):
         """
         截断缓存到指定长度 (用于投机采样回退)
-        Args:
+        参数：
             max_len: 保留的序列长度
         """
+        if not 0 <= max_len <= self.get_seq_len():
+            raise ValueError("截断长度必须位于当前缓存范围内")
         if self.k_cache is not None and self.k_cache.size(2) > max_len:
             # 维度: [batch, n_head, seq_len, d_k] -> 在第2维截断
             self.k_cache = self.k_cache[:, :, :max_len, :]
@@ -91,7 +93,7 @@ class KVCache:
         """清空缓存"""
         self.k_cache = None
         self.v_cache = None
-    
+
     def get_seq_len(self) -> int:
         """获取当前缓存的序列长度"""
         if self.k_cache is None:
@@ -99,12 +101,12 @@ class KVCache:
         return self.k_cache.size(2)
 #MHA机制+链表KVCache
 class CauseMutiHeadAttention(nn.Module):
-    def __init__ (self , 
-                  d_model:int , 
-                  n_head : int , 
-                  max_seq_size : int = None, 
-                  device = None , 
-                  dtype = None , 
+    def __init__ (self ,
+                  d_model:int ,
+                  n_head : int ,
+                  max_seq_size : int = None,
+                  device = None ,
+                  dtype = None ,
                   theta=None):
         super().__init__()
         #判断维度
@@ -120,17 +122,18 @@ class CauseMutiHeadAttention(nn.Module):
         self.v_pro = nn.Linear(d_model , d_model ,**factory_par)
         #输出投影层 整合所有信息
         self.output_pro = nn.Linear(d_model , d_model ,**factory_par)
-        
+
         if theta is not None and max_seq_size is not None:
             self.rope = RotaryPositionalEmbedding(theta,self.d_k,max_seq_size,device=device)
         else:
             self.rope = None
-        
+
         self.k_v_cache = KVCache()
-    def forward(self,x:torch.tensor, 
+    def forward(self,x:torch.tensor,
                 token_position:torch.tensor = None,
                 use_cache: bool = False,
-                start_pos: int = 0
+                start_pos: int = 0,
+                attention_mask: torch.Tensor = None,
                 )-> torch.Tensor :
         b,s,d = x.shape
         #将映射拆分为多头
@@ -144,50 +147,54 @@ class CauseMutiHeadAttention(nn.Module):
                 #默认生成从0开始的顺序位置
                 #expand处理 Batch维度,不占用额外的内存
                 token_position = torch.arange(s,device=x.device).expand(b,s)
-            
+
             #对Q,K进行旋转,V保持不动
             q = self.rope(q,token_position)
             k = self.rope(k,token_position)
-        
+
         # 使用 KV Cache
         if use_cache:
             # 更新缓存并获取完整的 K, V
             k, v = self.k_v_cache.update(k, v, start_pos)
-            
+
             # 当前缓存的序列长度
             cached_seq_len = self.k_v_cache.get_seq_len()
-            
+
             # 生成因果掩码
             # Q 的长度是当前输入长度 s
             # K 的长度是缓存长度 cached_seq_len
             if s == 1:
                 # 生成阶段:单个新token可以看所有历史token
                 # mask shape: [1, cached_seq_len],全为True
-                mask = torch.ones(1, cached_seq_len, device=self.device, dtype=torch.bool)
+                mask = torch.ones(1, cached_seq_len, device=x.device, dtype=torch.bool)
             else:
                 # Prefill阶段:需要完整的因果掩码
                 # 创建 [s, cached_seq_len] 的掩码
-                mask = torch.zeros(s, cached_seq_len, device=self.device, dtype=torch.bool)
-                
+                mask = torch.zeros(s, cached_seq_len, device=x.device, dtype=torch.bool)
+
                 # 历史缓存部分(start_pos之前)全部可见
                 if start_pos > 0:
                     mask[:, :start_pos] = True
-                
+
                 # 当前输入部分(start_pos到start_pos+s)使用下三角掩码
                 current_mask = torch.tril(
-                    torch.ones(s, s, device=self.device, dtype=torch.bool)
+                    torch.ones(s, s, device=x.device, dtype=torch.bool)
                 )
                 mask[:, start_pos:start_pos+s] = current_mask
-            
+
             # 如果是生成阶段(s=1),Q只需要看所有之前的K
             # mask shape: [1, cached_seq_len],全为True
         else:
             # 训练模式: 标准因果掩码
-            mask = torch.tril(torch.ones(s, s, device=self.device, dtype=torch.bool))
-        
+            mask = torch.tril(torch.ones(s, s, device=x.device, dtype=torch.bool))
+
+        if attention_mask is not None:
+            if attention_mask.shape != (b, k.size(2)):
+                raise ValueError("attention_mask 必须覆盖当前输入及全部缓存")
+            mask = mask[None, None] & attention_mask[:, None, None, :].bool()
         #核心注意力计算(SDPA)(bath_size,heads,seq,d_k)
         attn_out = scaled_dot_product_attention(q,k,v,mask=mask)
-        
+
         #合并多头
         attn_out = rearrange(attn_out,'... h s d -> ... s (h d)')
         #返回output以便之后取出logits
@@ -195,7 +202,7 @@ class CauseMutiHeadAttention(nn.Module):
     def clear_cache(self):
         """清空 KV Cache"""
         self.k_v_cache.clear()
-    
+
     def get_cache_seq_len(self) -> int:
         """获取当前缓存的序列长度"""
         return self.k_v_cache.get_seq_len()
@@ -203,10 +210,10 @@ class CauseMutiHeadAttention(nn.Module):
     def truncate_cache(self, length: int):
         """截断 KV Cache"""
         self.k_v_cache.truncate(length)
-#GQA
+# 分组查询注意力
 class GroupedQueryAttention(nn.Module):
     """
-    Args:
+    参数：
         d_model:     模型维度
         n_head:      Q 的头数(必须被 n_kv_head 整除)
         n_kv_head:   K/V 的头数
@@ -268,9 +275,9 @@ class GroupedQueryAttention(nn.Module):
             return x
         b, h, s, d = x.shape
         return (
-            x.unsqueeze(2)                     # [b, h, 1, s, d]
-             .expand(b, h, n_rep, s, d)        # [b, h, n_rep, s, d]
-             .reshape(b, h * n_rep, s, d)      # [b, n_head, s, d]
+            x.unsqueeze(2)                     # 张量形状或计算公式：[b, h, 1, s, d]
+             .expand(b, h, n_rep, s, d)        # 张量形状或计算公式：[b, h, n_rep, s, d]
+             .reshape(b, h * n_rep, s, d)      # 张量形状或计算公式：[b, n_head, s, d]
         )
 
     # ----------------------------------------------------------
@@ -288,32 +295,32 @@ class GroupedQueryAttention(nn.Module):
         k = rearrange(self.k_proj(x), "b s (h d) -> b h s d", h=self.n_kv_head)
         v = rearrange(self.v_proj(x), "b s (h d) -> b h s d", h=self.n_kv_head)
 
-        # RoPE
+        # 旋转位置编码
         if self.rope is not None:
             if token_position is None:
                 token_position = torch.arange(s, device=x.device).expand(b, s)
             q = self.rope(q, token_position)
             k = self.rope(k, token_position)
 
-        # KV Cache
+        # 键值缓存
         if use_cache:
             k, v = self.kv_cache.update(k, v, start_pos)
             cached_len = self.kv_cache.get_seq_len()
             if s == 1:
-                mask = torch.ones(1, cached_len, device=self.device, dtype=torch.bool)
+                mask = torch.ones(1, cached_len, device=x.device, dtype=torch.bool)
             else:
-                mask = torch.zeros(s, cached_len, device=self.device, dtype=torch.bool)
+                mask = torch.zeros(s, cached_len, device=x.device, dtype=torch.bool)
                 if start_pos > 0:
                     mask[:, :start_pos] = True
                 mask[:, start_pos:start_pos + s] = torch.tril(
-                    torch.ones(s, s, device=self.device, dtype=torch.bool)
+                    torch.ones(s, s, device=x.device, dtype=torch.bool)
                 )
         else:
             cached_len = s
-            mask = torch.tril(torch.ones(s, s, device=self.device, dtype=torch.bool))
+            mask = torch.tril(torch.ones(s, s, device=x.device, dtype=torch.bool))
 
         # 将 KV 头扩展到 Q 头数
-        k_exp = self._repeat_kv(k, self.n_rep)   # [b, n_head, cached_len, d_k]
+        k_exp = self._repeat_kv(k, self.n_rep)   # 张量形状或计算公式：[b, n_head, cached_len, d_k]
         v_exp = self._repeat_kv(v, self.n_rep)
 
         # 注意力计算
@@ -329,11 +336,9 @@ class GroupedQueryAttention(nn.Module):
 
     def truncate_cache(self, length: int):
         self.kv_cache.truncate(length)
-#MQA
+# 多查询注意力
 class MultiQueryAttention(nn.Module):
-    """
-    Multi-Query Attention(MQA)
-    """
+    "多查询注意力：多个查询头共享一个键值头。"
 
     def __init__(
         self,
@@ -380,7 +385,7 @@ class MultiQueryAttention(nn.Module):
         # Q: 多头 [b, n_head, s, d_k]
         q = rearrange(self.q_proj(x), "b s (h d) -> b h s d", h=self.n_head)
         # K/V: 单头 [b, 1, s, d_k]
-        k = self.k_proj(x).unsqueeze(1)   # [b, 1, s, d_k]
+        k = self.k_proj(x).unsqueeze(1)   # 张量形状或计算公式：[b, 1, s, d_k]
         v = self.v_proj(x).unsqueeze(1)
 
         # RoPE(对 Q 的每一头以及单头 K 施加)
@@ -390,28 +395,28 @@ class MultiQueryAttention(nn.Module):
             q = self.rope(q, token_position)
             k = self.rope(k, token_position)
 
-        # KV Cache
+        # 键值缓存
         if use_cache:
             k, v = self.kv_cache.update(k, v, start_pos)
             cached_len = self.kv_cache.get_seq_len()
             if s == 1:
-                mask = torch.ones(1, cached_len, device=self.device, dtype=torch.bool)
+                mask = torch.ones(1, cached_len, device=x.device, dtype=torch.bool)
             else:
-                mask = torch.zeros(s, cached_len, device=self.device, dtype=torch.bool)
+                mask = torch.zeros(s, cached_len, device=x.device, dtype=torch.bool)
                 if start_pos > 0:
                     mask[:, :start_pos] = True
                 mask[:, start_pos:start_pos + s] = torch.tril(
-                    torch.ones(s, s, device=self.device, dtype=torch.bool)
+                    torch.ones(s, s, device=x.device, dtype=torch.bool)
                 )
         else:
             cached_len = s
-            mask = torch.tril(torch.ones(s, s, device=self.device, dtype=torch.bool))
+            mask = torch.tril(torch.ones(s, s, device=x.device, dtype=torch.bool))
 
         # 将单头 K/V 广播到 n_head(expand 不分配额外显存)
         k_exp = k.expand(b, self.n_head, cached_len, self.d_k)
         v_exp = v.expand(b, self.n_head, cached_len, self.d_k)
 
-       
+
         attn_out = scaled_dot_product_attention(q, k_exp, v_exp, mask=mask)
         attn_out = rearrange(attn_out, "b h s d -> b s (h d)")
         return self.out_proj(attn_out)
@@ -424,7 +429,7 @@ class MultiQueryAttention(nn.Module):
 
     def truncate_cache(self, length: int):
         self.kv_cache.truncate(length)
-#MLA
+# 多头潜在注意力
 class MultiHeadLatentAttention(nn.Module):
     """
     Multi-head Latent Attention(MLA)
@@ -449,7 +454,7 @@ class MultiHeadLatentAttention(nn.Module):
         d_rope    : RoPE 维度(每头)
         d_nope    : 非 RoPE 维度(每头),d_k = d_rope + d_nope
 
-    Args:
+    参数：
         d_model:    模型维度
         n_head:     注意力头数
         d_c:        KV 潜在压缩维度(论文推荐 ≈ d_model/4)
@@ -492,14 +497,14 @@ class MultiHeadLatentAttention(nn.Module):
         # ── Q 路径(低秩压缩)──────────────────────────────────
         # 下投影:x -> c_q [d_cq]
         self.q_down_proj  = nn.Linear(d_model, self.d_cq, **factory_par)
-        self.q_norm       = nn.RMSNorm(self.d_cq)                      # 稳定训练
+        self.q_norm       = nn.RMSNorm(self.d_cq, **factory_par)       # 稳定训练
         # 上投影:c_q -> q_nope + q_rope,拼接后维度为 n_head * d_k
         self.q_up_proj    = nn.Linear(self.d_cq, n_head * self.d_k, **factory_par)
 
         # ── KV 路径(低秩压缩,共享潜在向量 c_kv)────────────
         # 下投影:x -> c_kv [d_c]
         self.kv_down_proj = nn.Linear(d_model, d_c, **factory_par)
-        self.kv_norm      = nn.RMSNorm(d_c)
+        self.kv_norm      = nn.RMSNorm(d_c, **factory_par)
         # 上投影:c_kv -> k_nope + v_all,一次投影同时生成 K(nope) 和 V
         # 输出维度:n_head * (d_nope + d_k)
         self.kv_up_proj   = nn.Linear(d_c, n_head * (self.d_nope + self.d_k), **factory_par)
@@ -534,26 +539,26 @@ class MultiHeadLatentAttention(nn.Module):
         b, s, _ = x.shape
 
         # ── Q 计算 ─────────────────────────────────────────────
-        c_q = self.q_norm(self.q_down_proj(x))                 # [b, s, d_cq]
+        c_q = self.q_norm(self.q_down_proj(x))                 # 张量形状或计算公式：[b, s, d_cq]
         q   = rearrange(
             self.q_up_proj(c_q), "b s (h d) -> b h s d", h=self.n_head
-        )                                                       # [b, n_head, s, d_k]
+        )                                                       # 张量形状或计算公式：[b, n_head, s, d_k]
         # 拆分为 nope 和 rope 部分
         q_nope, q_rope = q.split([self.d_nope, self.d_rope], dim=-1)
 
         # ── KV 计算 ────────────────────────────────────────────
-        c_kv = self.kv_norm(self.kv_down_proj(x))              # [b, s, d_c]
+        c_kv = self.kv_norm(self.kv_down_proj(x))              # 张量形状或计算公式：[b, s, d_c]
         kv   = rearrange(
             self.kv_up_proj(c_kv),
             "b s (h d) -> b h s d",
             h=self.n_head
-        )                                                       # [b, n_head, s, d_nope+d_k]
+        )                                                       # 张量形状或计算公式：[b, n_head, s, d_nope+d_k]
         k_nope, v = kv.split([self.d_nope, self.d_k], dim=-1)  # k_nope/v 各 n_head 头
 
         # 解耦 k_rope(直接从 x 投影,不经过低秩压缩)
         k_rope = rearrange(
             self.k_rope_proj(x), "b s (h d) -> b h s d", h=self.n_head
-        )                                                       # [b, n_head, s, d_rope]
+        )                                                       # 张量形状或计算公式：[b, n_head, s, d_rope]
 
         # ── 应用 RoPE(仅 rope 维度)──────────────────────────
         if self.rope is not None:
@@ -563,12 +568,12 @@ class MultiHeadLatentAttention(nn.Module):
             k_rope  = self.rope(k_rope, token_position)
 
         # 拼接得到完整 Q 和 K
-        # Q: [b, n_head, s, d_nope + d_rope] = [b, n_head, s, d_k]
+        # 张量形状或计算公式：Q: [b, n_head, s, d_nope + d_rope] = [b, n_head, s, d_k]
         q = torch.cat([q_nope, q_rope], dim=-1)
-        # K: [b, n_head, s, d_nope + d_rope] = [b, n_head, s, d_k]
+        # 张量形状或计算公式：K: [b, n_head, s, d_nope + d_rope] = [b, n_head, s, d_k]
         k = torch.cat([k_nope, k_rope], dim=-1)
 
-        # ── KV Cache ──────────────────────────────────────────
+        # ── 键值缓存 ──────────────────────────────────────────
         # 缓存策略:
         #   - c_kv_cache: 存低维 c_kv(节省显存),需要时再上投影
         #   - k_rope_cache: 存 k_rope(解耦 RoPE,必须分开缓存)
@@ -577,10 +582,10 @@ class MultiHeadLatentAttention(nn.Module):
         # 将 c_kv 视为 h=1 的单头张量
         if use_cache:
             # 缓存 c_kv(reshape 为 [b, 1, s, d_c])
-            c_kv_4d = c_kv.unsqueeze(1)                         # [b, 1, s, d_c]
+            c_kv_4d = c_kv.unsqueeze(1)                         # 张量形状或计算公式：[b, 1, s, d_c]
             c_kv_4d, _ = self.c_kv_cache.update(c_kv_4d, c_kv_4d, start_pos)
             # 从完整历史 c_kv 重新上投影 K/V(包含历史 + 当前)
-            c_kv_full = c_kv_4d.squeeze(1)                      # [b, cached_s, d_c]
+            c_kv_full = c_kv_4d.squeeze(1)                      # 张量形状或计算公式：[b, cached_s, d_c]
             kv_full   = rearrange(
                 self.kv_up_proj(c_kv_full),
                 "b s (h d) -> b h s d",
@@ -593,21 +598,21 @@ class MultiHeadLatentAttention(nn.Module):
             # k_rope 现在包含历史,形状 [b, n_head, cached_s, d_rope]
 
             # 重组完整 K
-            k = torch.cat([k_nope_full, k_rope], dim=-1)        # [b, n_head, cached_s, d_k]
+            k = torch.cat([k_nope_full, k_rope], dim=-1)        # 张量形状或计算公式：[b, n_head, cached_s, d_k]
             v = v_full
 
             cached_len = self.c_kv_cache.get_seq_len()
             if s == 1:
-                mask = torch.ones(1, cached_len, device=self.device, dtype=torch.bool)
+                mask = torch.ones(1, cached_len, device=x.device, dtype=torch.bool)
             else:
-                mask = torch.zeros(s, cached_len, device=self.device, dtype=torch.bool)
+                mask = torch.zeros(s, cached_len, device=x.device, dtype=torch.bool)
                 if start_pos > 0:
                     mask[:, :start_pos] = True
                 mask[:, start_pos:start_pos + s] = torch.tril(
-                    torch.ones(s, s, device=self.device, dtype=torch.bool)
+                    torch.ones(s, s, device=x.device, dtype=torch.bool)
                 )
         else:
-            mask = torch.tril(torch.ones(s, s, device=self.device, dtype=torch.bool))
+            mask = torch.tril(torch.ones(s, s, device=x.device, dtype=torch.bool))
 
         # ── 注意力计算 ────────────────────────────────────────
         attn_out = scaled_dot_product_attention(q, k, v, mask=mask)

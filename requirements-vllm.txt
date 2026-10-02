@@ -1,0 +1,3 @@
+# 在 Linux 下启用独立的 vLLM 评估模型。
+-r requirements.txt
+vllm==0.8.5.post1; sys_platform == "linux"

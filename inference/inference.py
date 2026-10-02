@@ -3,166 +3,78 @@ from tokenizers import Tokenizer
 from transformer import TransformerLM
 import argparse
 from pathlib import Path
+from utils.generation import load_dense_model, sampling_probs
 
 
 class TextGenerator:
     """文本生成器类"""
-    
-    def __init__(self, model_path, tokenizer_path, device='cuda'):
+
+    def __init__(self, model_path, tokenizer_path, device='cuda', config_overrides=None):
         """
         初始化文本生成器
         
-        Args:
+        参数：
             model_path: 模型checkpoint路径
             tokenizer_path: tokenizer文件路径
             device: 运行设备 ('cuda' or 'cpu')
         """
         self.device = device if torch.cuda.is_available() else 'cpu'
         print(f"使用设备: {self.device}")
-        
-        # 加载tokenizer
-        print(f"加载tokenizer: {tokenizer_path}")
-        self.tokenizer = Tokenizer.from_file(tokenizer_path)
-        self.vocab_size = self.tokenizer.get_vocab_size()
-        
-        # 加载模型checkpoint
-        print(f"加载模型: {model_path}")
-        checkpoint = torch.load(model_path, map_location=self.device)
-        
-        # 从checkpoint中获取模型配置
-        self.config = checkpoint.get('config', {})
-        
-        # 初始化模型
-        self.model = TransformerLM(
-            d_model=self.config.get('d_model', 512),
-            n_head=self.config.get('n_head', 8),
-            vocab_size=self.vocab_size,
-            max_seq_len=self.config.get('max_seq_len', 512),
-            d_ff=self.config.get('d_ff', 2048),
-            theta=self.config.get('theta', 10000.0),
-            n_layer=self.config.get('n_layer', 6),
-            device=self.device,
-            dtype=torch.float32
+
+        self.model, self.tokenizer, self.config = load_dense_model(
+            model_path, tokenizer_path, self.device, config_overrides
         )
-        
-        # 加载模型权重
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.model.eval()
-        
-        print("模型加载完成!")
-        print(f"模型参数量: {sum(p.numel() for p in self.model.parameters()):,}")
-        print("KV Cache 已启用")
-    
+        self.vocab_size = self.config['vocab_size']
+
     @torch.no_grad()
-    def generate(self, prompt, max_new_tokens=250, temperature=1.0, 
+    def generate(self, prompt, max_new_tokens=250, temperature=1.0,
                  top_k=None, top_p=0.9, repetition_penalty=1.0):
-        """
-        生成文本 - 修复版
-        
-        Args:
-            prompt: 输入提示文本
-            max_new_tokens: 最大生成token数
-            temperature: 温度参数，越高越随机
-            top_k: top-k采样
-            top_p: nucleus采样
-            repetition_penalty: 重复惩罚系数
-            
-        Returns:
-            生成的完整文本
-        """
-        # 编码输入
-        encoding = self.tokenizer.encode(prompt)
-        input_ids = torch.tensor([encoding.ids], dtype=torch.long, device=self.device)
-        
-        # 检查prompt长度
-        max_seq_len = self.config.get('max_seq_len', 512)
-        if input_ids.shape[1] > max_seq_len - max_new_tokens:
-            print(f"警告: Prompt太长 ({input_ids.shape[1]} tokens)，截断到 {max_seq_len - max_new_tokens}")
-            input_ids = input_ids[:, -(max_seq_len - max_new_tokens):]
-        
-        # 用于重复惩罚的token计数
-        token_counts = {}
-        
-        # 清空缓存
+        """先计算提示词，再利用缓存逐个生成 token。"""
+        if max_new_tokens < 0:
+            raise ValueError('max_new_tokens 必须非负')
+        ids = self.tokenizer.encode(prompt).ids
+        if not ids:
+            raise ValueError('提示词至少需要一个 token')
+        if max_new_tokens == 0:
+            return self.tokenizer.decode(ids)
+        max_len = self.config['max_seq_len']
+        ids = ids[-max(1, max_len - min(max_new_tokens, max_len - 1)):]
+        input_ids = torch.tensor([ids], dtype=torch.long, device=self.device)
+        counts = {}
+        eos = self.tokenizer.token_to_id('<|endoftext|>')
         self.model.clear_cache()
-        
-        # Prefill阶段 - 只处理一次prompt
-        logits = self.model(input_ids, use_cache=True)
-        next_token_logits = logits[:, -1, :]
-        
-        # Generation循环 - 每次只处理新token
-        for i in range(max_new_tokens):
-            # 应用重复惩罚
-            if repetition_penalty != 1.0:
-                for token_id, count in token_counts.items():
-                    next_token_logits[:, token_id] /= (repetition_penalty ** count)
-            
-            # 应用温度
-            next_token_logits = next_token_logits / temperature
-            
-            # Top-k采样
-            if top_k is not None:
-                indices_to_remove = next_token_logits < torch.topk(next_token_logits, top_k)[0][..., -1, None]
-                next_token_logits[indices_to_remove] = float('-inf')
-            
-            # Top-p (nucleus)采样
-            if top_p < 1.0:
-                sorted_logits, sorted_indices = torch.sort(next_token_logits, descending=True)
-                cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-                
-                # 移除累积概率超过top_p的tokens
-                sorted_indices_to_remove = cumulative_probs > top_p
-                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                sorted_indices_to_remove[..., 0] = 0
-                
-                indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-                next_token_logits[indices_to_remove] = float('-inf')
-            
-            # 采样
-            probs = torch.softmax(next_token_logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
-            
-            # 更新token计数
-            token_id = next_token.item()
-            token_counts[token_id] = token_counts.get(token_id, 0) + 1
-            
-            # 拼接到序列（用于最终解码）
-            input_ids = torch.cat([input_ids, next_token], dim=1)
-            
-            # 检查序列长度
-            if input_ids.shape[1] >= max_seq_len:
-                print(f"\n达到最大序列长度 {max_seq_len}，停止生成")
-                break
-            
-            # 只传入新token，不是整个序列 
-            logits = self.model(next_token, use_cache=True)
-            next_token_logits = logits[:, -1, :]
-            
-            # 检查是否生成了结束符（如果有的话）
-            # 这里可以根据实际情况添加EOS token的检查
-        
-        # 解码生成的文本
-        generated_ids = input_ids[0].tolist()
-        generated_text = self.tokenizer.decode(generated_ids)
-        
-        return generated_text
-    
+        try:
+            logits = self.model(input_ids, use_cache=True)[:, -1, :]
+            for _ in range(min(max_new_tokens, max_len - len(ids))):
+                probs = sampling_probs(logits, temperature, top_k, top_p, counts,
+                                       repetition_penalty, self.tokenizer)
+                token = torch.multinomial(probs, 1)
+                token_id = token.item()
+                ids.append(token_id)
+                counts[token_id] = counts.get(token_id, 0) + 1
+                if token_id == eos or len(ids) >= max_len:
+                    break
+                logits = self.model(token, use_cache=True)[:, -1, :]
+            return self.tokenizer.decode(ids)
+        finally:
+            self.model.clear_cache()
+
     def interactive_mode(self):
         """交互式生成模式"""
         print("进入交互模式 (输入 'quit' 退出)")
         print("提示: 每次生成都会自动清空KV Cache\n")
-        
+
         while True:
             try:
                 prompt = input("\n请输入提示文本: ").strip()
-                
+
                 if prompt.lower() == 'quit':
                     print("退出交互模式")
                     break
-                
+
                 if not prompt:
                     continue
-                
+
                 print("\n生成中...")
                 generated_text = self.generate(
                     prompt=prompt,
@@ -171,10 +83,10 @@ class TextGenerator:
                     top_p=0.9,
                     repetition_penalty=1.2
                 )
-                
+
                 print("\n生成结果:")
                 print(generated_text)
-                
+
             except KeyboardInterrupt:
                 print("\n\n退出交互模式")
                 break
@@ -186,7 +98,7 @@ class TextGenerator:
 
 def main():
     parser = argparse.ArgumentParser(description='Transformer模型推理')
-    parser.add_argument('--model_path', type=str, required=True, 
+    parser.add_argument('--model_path', type=str, required=True,
                         help='模型checkpoint路径')
     parser.add_argument('--tokenizer_path', type=str, default='tokenizer.json',
                         help='tokenizer文件路径')
@@ -204,30 +116,30 @@ def main():
                         help='nucleus采样')
     parser.add_argument('--repetition_penalty', type=float, default=1.2,
                         help='重复惩罚系数')
-    
+
     args = parser.parse_args()
-    
+
     # 检查文件是否存在
     if not Path(args.model_path).exists():
         print(f"错误: 模型文件不存在: {args.model_path}")
         return
-    
+
     if not Path(args.tokenizer_path).exists():
         print(f"错误: Tokenizer文件不存在: {args.tokenizer_path}")
         return
-    
+
     # 初始化生成器
     generator = TextGenerator(
         model_path=args.model_path,
         tokenizer_path=args.tokenizer_path,
         device=args.device
     )
-    
+
     # 如果提供了prompt，直接生成；否则进入交互模式
     if args.prompt:
         print(f"\n输入提示: {args.prompt}")
         print("\n生成中...\n")
-        
+
         generated_text = generator.generate(
             prompt=args.prompt,
             max_new_tokens=args.max_new_tokens,
@@ -236,7 +148,7 @@ def main():
             top_p=args.top_p,
             repetition_penalty=args.repetition_penalty
         )
-        
+
         print("生成结果:")
         print(generated_text)
     else:

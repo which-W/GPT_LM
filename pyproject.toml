@@ -1,26 +1,8 @@
-# ============================================================
-# pyproject.toml — uv 完整解决方案
-# 使用方式：
-#   1. 安装 uv：  curl -LsSf https://astral.sh/uv/install.sh | sh
-#   2. 创建环境：  uv venv --python 3.11
-#   3. 激活环境：  source .venv/bin/activate
-#   4. 安装依赖：  uv sync
-#
-# CUDA 版本说明：
-#   你的 CUDA 是 12.8，PyTorch 官方不单独发布 cu128 wheel。
-#   cu124 wheel 可在 CUDA 12.8 上正常运行（向下兼容）。
-#
-# 网络说明：
-#   默认源改为清华镜像，解决国内服务器访问 pypi.org 超时的问题。
-#   torch/torchvision/torchaudio 仍从 PyTorch 官方源拉（explicit 模式），
-#   其余所有包走清华镜像。
-# ============================================================
-
 [project]
 name = "sft-training"
 version = "0.1.0"
 description = "SFT training pipeline with vLLM evaluation"
-requires-python = "==3.11.*"
+requires-python = ">=3.11,<3.13"
 
 dependencies = [
     # PyTorch 生态 — 显式指定从 pytorch-cu124 源拉，三者版本必须对齐
@@ -28,11 +10,9 @@ dependencies = [
     "torchaudio==2.6.0",
     "torchvision==0.21.0",
 
-    # 推理引擎
-    "vllm==0.8.5.post1",
 
     # HuggingFace 生态
-    # transformers <5.0 是硬性上限，vllm 0.8.x 不兼容 transformers 5.x
+    # 保持后训练与可选 vLLM 后端使用同一代 Transformers 接口
     "transformers==4.57.6",
     "tokenizers==0.22.2",
 
@@ -44,6 +24,10 @@ dependencies = [
     "wandb>=0.25.0",
 
     # 数据工具
+    "datasets>=3.0.0,<4.0.0",
+    "pandas>=2.2.0,<3.0.0",
+    "tqdm>=4.66.0",
+    "safetensors>=0.4.0",
     "xxhash==3.5.0",
 
     # 数学验证（reward_fn 依赖）
@@ -57,6 +41,9 @@ dependencies = [
     # 数值计算
     "numpy>=1.26.0,<3.0.0",
 ]
+
+[project.optional-dependencies]
+vllm = ["vllm==0.8.5.post1; sys_platform == 'linux'"]
 
 # ============================================================
 # uv 索引配置
@@ -72,7 +59,6 @@ name = "tuna"
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
 # PyTorch cu124 源设为 explicit，只有被显式标注的包才从这里拉
-# CUDA 12.8 完全兼容 cu124 wheel，官方不单独发 cu128
 [[tool.uv.index]]
 name = "pytorch-cu124"
 url = "https://download.pytorch.org/whl/cu124"

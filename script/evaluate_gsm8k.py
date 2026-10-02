@@ -1,4 +1,6 @@
 import os
+import argparse
+from pathlib import Path
 import json
 import time
 import re
@@ -15,9 +17,9 @@ from utils.parse_gsm8k_res import parse_gsm8k_response
 # ================= 配置区 =================
 VLLM_API_URL = "http://localhost:8010/v1"
 MODEL_NAME = "Qwen3-4B-Base"
-DATA_PATH = "data/gsm8k/test.jsonl"
+DATA_PATH = "data/gsm8k-val.jsonl"
 OUTPUT_FILE = f"result/gsm8k_{MODEL_NAME}_SFT_results.json"
-MAX_WORKERS = 100
+MAX_WORKERS = 8
 
 # 官方指定的统一 System Prompt
 SYSTEM_PROMPT = (
@@ -30,7 +32,7 @@ SYSTEM_PROMPT = (
     "Your response must be socially responsible, and thus you can reject to answer some controversial topics."
 )
 
-client = OpenAI(base_url=VLLM_API_URL, api_key="empty")
+client = None
 
 # ================= 工具函数 =================
 
@@ -54,7 +56,7 @@ def load_gsm8k_data(file_path: str) -> List[Dict[str, Any]]:
 def call_vllm_api(item: Dict[str, Any]) -> Dict[str, Any]:
     """使用 client.completions.create 进行原始文本补全推理"""
     question = item["question"]
-    
+
     full_raw_prompt =  f"{SYSTEM_PROMPT}\n{question}\nAnswer:"
 
     try:
@@ -65,18 +67,18 @@ def call_vllm_api(item: Dict[str, Any]) -> Dict[str, Any]:
             temperature=0.0,  # 官方要求：Greedy Decoding
             max_tokens=512,   # 足够容纳推理过程
             # 停止符：防止 Base 模型在输出答案后复读题目或伪造对话
-            stop=["# Query:", "```", "\n\n#", "User:", "Assistant:"] 
+            stop=["# Query:", "```", "\n\n#", "User:", "Assistant:"]
         )
-        
+
         # 获取生成内容 (Completions 接口使用 .text)
         gen_text = response.choices[0].text
-        
+
         # 使用解析工具提取数字
         pred_str = parse_gsm8k_response(gen_text)
-        
+
         pred_val = None
         is_correct = False
-        
+
         if pred_str is not None:
             try:
                 pred_val = float(pred_str)
@@ -98,6 +100,18 @@ def call_vllm_api(item: Dict[str, Any]) -> Dict[str, Any]:
 # ================= 主程序 =================
 
 def main():
+    global MODEL_NAME, DATA_PATH, OUTPUT_FILE, MAX_WORKERS, client
+    parser = argparse.ArgumentParser(description="通过兼容 OpenAI 的服务评估 GSM8K")
+    parser.add_argument("--api_url", default=VLLM_API_URL)
+    parser.add_argument("--model_name", default=MODEL_NAME)
+    parser.add_argument("--data_path", default=DATA_PATH)
+    parser.add_argument("--output_file", default=OUTPUT_FILE)
+    parser.add_argument("--max_workers", type=int, default=MAX_WORKERS)
+    args = parser.parse_args()
+    if args.max_workers < 1:
+        parser.error("并发数必须为正数")
+    MODEL_NAME, DATA_PATH, OUTPUT_FILE, MAX_WORKERS = args.model_name, args.data_path, args.output_file, args.max_workers
+    client = OpenAI(base_url=args.api_url, api_key=os.environ.get("OPENAI_API_KEY", "empty"), timeout=60, max_retries=1)
     # 1. 准备数据
     all_items = load_gsm8k_data(DATA_PATH)
     if not all_items:
@@ -112,7 +126,7 @@ def main():
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         # 提交任务
         future_to_item = {executor.submit(call_vllm_api, item): item for item in all_items}
-        
+
         # 收集结果
         for future in tqdm(as_completed(future_to_item), total=len(all_items)):
             res = future.result()
@@ -131,8 +145,8 @@ def main():
     correct_count = sum(1 for r in all_results if r["is_correct"])
     parse_failed_count = sum(1 for r in all_results if r["pred"] is None)
     total_evaluated = len(all_results)
-    
-    accuracy = correct_count / total_evaluated
+
+    accuracy = correct_count / len(all_items)
     throughput = total_evaluated / duration
 
     metrics = {
@@ -141,11 +155,13 @@ def main():
         "throughput_samples_per_sec": throughput,
         "parsing_failure_count": parse_failed_count,
         "total_evaluated": total_evaluated,
-        "total_original": len(all_items)
+        "total_original": len(all_items),
+        "request_failure_count": len(all_items) - total_evaluated,
+        "accuracy_successful_requests": correct_count / total_evaluated
     }
 
     # 4. 序列化保存
-    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+    Path(OUTPUT_FILE).parent.mkdir(parents=True, exist_ok=True)
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump({
             "config": {
@@ -154,7 +170,7 @@ def main():
                 "temperature": 0.0,
                 "stop_sequences": ["# Query:", "```"]
             },
-            "metrics": metrics, 
+            "metrics": metrics,
             "details": all_results
         }, f, indent=2, ensure_ascii=False)
 

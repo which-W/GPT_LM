@@ -8,164 +8,106 @@ from tron_support.data_parallel_v.bucket import BucketManager
 import tron_support.process_group_manager as pgm
 
 class DataParallelNaive(nn.Module):
-    """
-    Naive Data Parallelism. Not used in practice. But it is a good starting point to understand how data parallelism works.
-    It implements a simple all-reduce operation to synchronize gradients across multiple processes.
-    And `no_sync` context manager to disable gradient synchronization.
-    """
+    "通过归约同步参数梯度的基础数据并行封装，支持临时关闭同步。"
     def __init__(self, module):
-        """
-        Initializes the DataParallel wrapper for a given module.
-
-        Args:
-            module (nn.Module): The model to be wrapped for data parallelism.
-            process_group (torch.distributed.ProcessGroup): The process group used for gradient synchronization. 
-                                                            It could be a data parallel or context parallel group.
-        """
+        "初始化参数分组、梯度存储和用于同步的通信组。"
         super().__init__()
         self.module = module
-        self.require_backward_grad_sync = True # whether to synchronize gradients during backward pass. Set to False when using gradient accumulation
+        self.require_backward_grad_sync = True # 控制反向传播时是否同步梯度，累积期间关闭同步
         self.register_backward_hook(self._allreduce_grads)
-    
+
     def forward(self, *inputs, **kwargs):
         return self.module(*inputs, **kwargs)
-    
+
     def register_backward_hook(self, hook):
-        """
-        Registers a backward hook for all parameters of the model that require gradients.    
-        """
+        "为可训练参数注册梯度累加与同步回调。"
         for p in self.module.parameters():
             if p.requires_grad is True:
                 p.register_post_accumulate_grad_hook(hook)
-                
+
     def _allreduce_grads(self, grad):
-        """
-        Performs an all-reduce operation to synchronize gradients across multiple processes.    
-        """
-        # No synchronization needed during gradient accumulation, except at the final accumulation step.
+        "在通信组内归约并平均参数梯度。"
+        # 只在梯度累积的最后一步进行同步
         if self.require_backward_grad_sync:
             dist.all_reduce(grad, op=dist.ReduceOp.SUM, group=pgm.process_group_manager.cp_dp_group)
             grad /= pgm.process_group_manager.cp_dp_world_size
-        return grad 
-    
+        return grad
+
     @contextlib.contextmanager
     def no_sync(self):
-        """
-        A context manager to temporarily disable gradient synchronization. 
-        This is useful for performing multiple backward passes during gradient accumulation without synchronizing 
-        gradients in between.
-        """
+        "在梯度累积期间临时关闭同步。"
         self.require_backward_grad_sync = False
         yield
         self.require_backward_grad_sync = True
 
 class DataParallelBucket(nn.Module):
-    """
-    Data Parallelism with gradient grouped into buckets to reduce the communication overhead.
-    """
+    "将梯度分组到桶中，减少数据并行的通信次数。"
     def __init__(self, module, bucket_cap_mb=25, grad_type = torch.float32):
-        """
-        Initialize the DataParallelBucket module.
-        
-        Args:
-            module (nn.Module): The model to be parallelized.
-            process_group: The process group for gradient synchronization, which can be either 
-                           a data parallel group or a context parallel group.
-            bucket_cap_mb (int, optional): The maximum size of each gradient synchronization bucket in megabytes. 
-                                           Defaults to 25 MB.
-            grad_type (torch.dtype, optional): The data type of gradients, defaulting to float32.
-        """
+        "初始化参数分组、梯度存储和用于同步的通信组。"
         super().__init__()
         self.module = module
-        self.require_backward_grad_sync = True # whether to synchronize gradients during backward pass. Set to False when using gradient accumulation
-        grad_size = 2 if grad_type == torch.bfloat16 else 4 # float32 gradient: 4 bytes
-        bucket_size = bucket_cap_mb * 1024 * 1024 // grad_size # number of gradients in one bucket
+        self.require_backward_grad_sync = True # 控制反向传播时是否同步梯度，累积期间关闭同步
+        grad_size = 2 if grad_type == torch.bfloat16 else 4 # 单精度梯度的每个元素占四字节
+        bucket_size = bucket_cap_mb * 1024 * 1024 // grad_size # 一个桶包含的梯度元素数量
         self.bucket_manager = BucketManager(module.parameters(), pgm.process_group_manager.cp_dp_group, bucket_size, grad_type)
         self.register_backward_hook()
-        self._post_backward_callback_set = False # whether the callback for wait gradient synchronization is set
-        
+        self._post_backward_callback_set = False # 记录是否已经注册等待梯度同步的回调
+
     def forward(self, *inputs, **kwargs):
         return self.module(*inputs, **kwargs)
 
     def backward(self, input_tensor, output_tensor, output_tensor_grad):
         return self.module.backward(input_tensor, output_tensor, output_tensor_grad)
-    
+
     def register_backward_hook(self):
-        """
-        Registers a backward hook to manually accumulate and synchronize gradients.
-        
-        This hook serves two main purposes:
-        1. PyTorch does not natively support gradient accumulation with mixed precision.
-        2. After gradient accumulation, it flags parameters as ready for synchronization.
-        
-        The gradient accumulation functions are stored to prevent them from going out of scope.
-        
-        References:
-        - https://github.com/NVIDIA/Megatron-LM/issues/690
-        - https://pytorch.org/docs/stable/generated/torch.autograd.graph.Node.register_hook.html
-        - https://arxiv.org/abs/2006.15704 (page 5)
-        """
+        "为可训练参数注册梯度累加与同步回调。"
         self.grad_accs = []
         for param in self.module.parameters():
             if param.requires_grad:
-                # Expand so we get access to grad_fn.
+                # 创建视图以获取梯度函数
                 param_tmp = param.expand_as(param)
-                # Get the gradient accumulator function.
+                # 获取梯度累加节点
                 grad_acc_fn = param_tmp.grad_fn.next_functions[0][0]
                 grad_acc_fn.register_hook(self._make_param_hook(param, self.bucket_manager))
                 self.grad_accs.append(grad_acc_fn)
-                
+
     def _make_param_hook(self, param: torch.nn.Parameter,bucket_manager: BucketManager):
-        """
-        Creates the a hook for each parameter to handle gradient accumulation and synchronization.
-        """
+        "创建参数梯度回调，负责累加梯度并标记同步就绪。"
         def param_hook(*unused):
-            """
-            The hook called after the gradient is ready. It performs the following:
-            1. Accumulates the gradient into the main gradient.
-            2. Adds a post-backward callback to wait for gradient synchronization completion.
-            3. Marks the parameter as ready for synchronization.
-            """
+            "累加当前梯度，注册等待同步完成的回调，并将参数标记为就绪。"
             if param.requires_grad:
                 assert param.grad is not None
-                param.main_grad.add_(param.grad.data) # accumulate the gradients
+                param.main_grad.add_(param.grad.data) # 累计梯度
                 param.grad = None
-                
-                # skip the gradient synchronization (gradient accumulation/PP micro batches)
+
+                # 梯度累积或流水线微批次阶段暂不执行同步
                 if self.require_backward_grad_sync:
-                    # Add a callback to wait for gradient synchronization. Ensures the callback is added only once.
-                    # Callback is executed after the backward pass. It should be added per backward pass.
+                    # 每次反向传播只注册一次等待梯度同步的回调
+                    # 回调在反向传播后执行，每次反向传播都需要重新注册
                     if not self._post_backward_callback_set:
                         Variable._execution_engine.queue_callback(self._post_backward)
                         self._post_backward_callback_set = True
-                        
-                    # mark the parameter as ready for gradient synchronization. 
-                    bucket_manager.mark_param_as_ready(param) 
+
+                    # 将当前参数标记为梯度同步已就绪
+                    bucket_manager.mark_param_as_ready(param)
         return param_hook
-    
+
     @contextlib.contextmanager
     def no_sync(self):
-        """A context manager to disable gradient synchronization."""
+        "在梯度累积期间临时关闭同步。"
         self.require_backward_grad_sync = False
         yield
         self.require_backward_grad_sync = True
-        
+
     def _post_backward(self):
-        """
-        A post-backward callback that waits for gradient synchronization to finish, then copies 
-        the synchronized gradients back to the parameters' grad attribute.
-        
-        This method is called after the backward pass and before the optimizer step.
-        """
+        "反向传播结束后等待同步完成，并把梯度复制回参数供优化器使用。"
         self.bucket_manager.wait()
         self._post_backward_callback_set = False
-        # copy to params.grad so we can use the optimizer to update the parameters
+        # 将同步后的梯度复制到参数，供优化器更新
         for p in self.module.parameters():
             if p.requires_grad:
-                p.grad = p.main_grad.to(p.dtype) # In PyTorch, you cannot assign a gradient with one data type to a tensor of another data type.
+                p.grad = p.main_grad.to(p.dtype) # 参数与其梯度必须使用相同的数据类型
 
     def reset(self):
-        """
-        Reset the bucket manager and zero out gradients in the model
-        """
-        self.bucket_manager.reset() 
+        "清空累计梯度与内部同步状态。"
+        self.bucket_manager.reset()

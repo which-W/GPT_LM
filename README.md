@@ -1,416 +1,137 @@
-#            GPT Language Model Implementation
+# GPT_LM：语言模型学习与实验项目
 
-<div align="center">
+这个项目从基础张量运算开始实现自回归语言模型，同时包含 MoE、mHC、Engram、缓存推理、分布式训练和后训练实验。代码适合学习和验证机制；各实验的性能和训练效果需要通过实际数据衡量。
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+## 项目中有哪些内容
 
-**一个模块化的深度学习项目，专注于Transformer语言模型的实现与优化**
+| 文件或目录 | 作用 |
+| --- | --- |
+| `transformer.py`、`transformer_block.py` | 基础语言模型：词嵌入、因果注意力、前馈网络、归一化和词表输出 |
+| `attention.py`、`rope.py` | MHA、GQA、MQA、MLA 注意力变体，旋转位置编码与 KV 缓存 |
+| `emb.py`、`Linnear.py`、`rmsnorm.py`、`layernorm.py`、`swiGLU.py` | 手写基础层，保留原文件名以兼容已有导入 |
+| `cross_entropy.py`、`adamw.py`、`schedule.py`、`clip_gradient_noem.py` | 损失、优化器、学习率调度和梯度裁剪 |
+| `tokenizer.py`、`dataset_process.py`、`get_batch.py` | BPE 分词器训练、文本编码和预测窗口采样 |
+| `train.py`、`checkpoint_use.py` | 基础模型训练、验证及检查点管理 |
+| `moe/` | 每个 token 选择少数专家计算，支持全 MoE 和部分层使用 MoE 的混合模型 |
+| `mhc/` | 多残差流及混合连接的实验模型 |
+| `engram/` | n-gram 哈希记忆检索与 MoE 的组合模型 |
+| `distributed/` | 基础模型 DDP 和手动同步专家梯度的多进程训练 |
+| `inference/` | 普通缓存生成、投机采样和自研分页缓存生成 |
+| `vllm_support/` | 分页缓存、块复用、请求调度和批量生成的教学实现 |
+| `SFT/`、`EI/` | 监督微调，以及筛选正确答案后再训练的专家迭代 |
+| `RL/DPO.py`、`RL/GRPO.py` | 基础模型的 Hugging Face 包装、偏好优化和组相对策略优化 |
+| `tron_support/` | LLaMA 权重加载、张量并行和数据并行实验 |
+| `utils/`、`tests/` | 共用功能、回归测试与训练入口短测试 |
 
+普通训练的数据流是：文本 → 分词器 → token 数组 → T+1 长度的窗口 → 前 T 个 token 输入模型 → 后 T 个 token 作为标签 → 交叉熵 → 反向传播 → 更新参数。
 
-</div>
+推理先计算整个提示词，再每次只输入一个新 token，读取已有 KV 缓存。投机采样使用草稿模型提出候选，目标模型根据概率分布接受或替换。分页引擎把请求的缓存分配到物理块中，通过调度复用和回收。
 
-## 📖 项目简介
+## 环境与依赖
 
-本项目是一个完整的深度学习教学与研究项目，从零实现了Transformer语言模型的各个组件。项目采用模块化设计，不仅涵盖了标准的Transformer架构，还实现了MoE（Mixture of Experts）、分布式训练、vLLM推理加速等前沿技术。
-
-### 🎯 项目目标
-
-- **教学导向**: 通过模块化实现帮助理解Transformer的每个组件
-- **研究友好**: 支持多种消融实验和架构变体
-- **高性能**: 支持分布式训练和高效推理
-- **可扩展**: 易于添加新特性和优化策略
-
-## ✨ 功能特性
-
-### 🧠 核心模型组件
-- **完整Transformer实现**: 包含所有核心组件的自定义实现
-- **注意力机制**: 多头注意力 + RoPE位置编码
-- **前馈网络**: SwiGLU/SiLU激活函数
-- **归一化层**: RMSNorm（可切换）
-- **自定义优化器**: AdamW优化器实现
-- **学习率调度**: Cosine Annealing with Warmup
-
-### 🚀 高级特性
-- **MoE支持**: 混合专家模型（类似DeepSeek V2）
-- **分布式训练**: 多GPU DDP训练支持
-- **KV Cache**: 推理加速优化
-- **vLLM兼容**: 支持PagedAttention推理
-- **梯度累积**: 大批次训练支持
-- **混合精度**: FP16/BF16训练
-
-### 🔬 实验功能
-- **消融实验**: 可配置的组件开关
-- **架构变体**: Pre-norm/Post-norm切换
-- **可视化监控**: WandB集成
-- **检查点管理**: 完整的训练状态保存/恢复
-
-## 🛠️ 安装指南
-
-### 环境要求
-
-- Python 3.8+
-- PyTorch 2.0+
-- CUDA 11.0+ (用于GPU训练)
-- Git
-
-### 克隆项目
+支持 Python 3.11–3.12。依赖以 `pyproject.toml` 和 `uv.lock` 为准，PyTorch 三个相关包统一使用 CUDA 12.4 索引。
 
 ```bash
-git clone https://github.com/which-W/GPT_LM.git
-cd GPT_LM
+uv sync --locked
 ```
 
-### 安装依赖
+也可以在自己的虚拟环境中安装 `requirements.txt`。它列出相同的直接依赖；精确复现完整依赖树应使用锁文件。项目已有的 `.venv` 没有被本次修复重新安装。
+
+真实 vLLM 是 Linux 可选依赖：`uv sync --locked --extra vllm`。SFT/EI 默认评估后端为 Transformers，与训练模型共享设备，支持 Windows 和单 GPU。`vllm_support/` 使用项目自己的实现，不需要安装外部 vLLM。
+
+## 数据格式与分词器
+
+现有 TinyStories `.bin` 文件由 **int64** 写入，因此所有训练入口默认 `--data_dtype int64`。旧代码按 uint16 读取会把一个 token 拆成多个数字，改变训练数据。外部数据如果使用 uint16 或 uint32，必须显式指定对应参数。
+
+新预处理生成同名 `.meta.json`，记录 dtype、token 数量和分词器指纹。读取时核对元数据，避免格式或分词器混用。
 
 ```bash
-# 创建虚拟环境（推荐）
-python -m venv .venv
-#或者
-uv venv --python 3.11
-
-source .venv/bin/activate  # Linux/Mac
-# 或 .venv\Scripts\activate  # Windows
-
-# 安装PyTorch（根据您的CUDA版本选择）
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-
-# 安装其他依赖
-pip install numpy einops wandb tensorboard
-
-#也可以使用uv进行安装
-uv sync
+python dataset_process.py --input_path data/my_train.txt --output_path data/my_train.bin --tokenizer_path tokenizer.json --dtype int64
 ```
 
-### 验证安装
+`tokenizer.py` 只有直接执行时才会训练分词器，导入不会覆盖文件。重新训练分词器后应重新生成数据，并训练匹配词表的模型。`mapping_dicts/` 的历史映射不能直接用于当前分词器，必须确保来源词表一致。
+
+## 基础模型训练
+
+在项目根目录运行。建议将修复后的训练结果保存到新目录，保留历史模型供比较：
 
 ```bash
-python -c "import torch; print(f'PyTorch版本: {torch.__version__}'); print(f'CUDA可用: {torch.cuda.is_available()}')"
+python train.py --train_data_path data/TinyStories-train.bin --valid_data_path data/TinyStories-valid.bin --data_dtype int64 --tokenizer_path tokenizer.json --checkpoint_dir checkpoints_fixed --dtype float32
 ```
 
-## 🚀 快速开始
+支持 `--no_rope`、`--no_rms_norm`、`--norm_rope pre/post`、`--ffn_type swiglu/silu` 消融选项。`--no_rms_norm` 同时关闭层内与最终归一化。CUDA 的 float16、bfloat16 设置使用自动混合精度，并保留单精度参数；FP16 启用梯度缩放。
 
-### 1. 数据准备
+Windows PowerShell 使用 `./train_win.ps1`；Git Bash 使用 `bash train_win.sh`；Linux 使用 `bash train_linux.sh`。脚本接受额外训练参数。完整选项见 `python train.py --help`。
+
+新检查点保存模型结构、优化器、迭代次数和分词器内容。通过 `--resume_from` 恢复训练时，必须使用相同结构和分词器。
+
+## 模型变体
 
 ```bash
-# 使用TinyStories数据集（示例）
-python dataset_process.py --input_path data/TinyStories-train.txt --output_path data/TinyStories-train.bin
-python dataset_process.py --input_path data/TinyStories-valid.txt --output_path data/TinyStories-valid.bin
+python -m mhc.train_mhc --train_data_path data/TinyStories-train.bin --valid_data_path data/TinyStories-valid.bin --checkpoint_dir checkpoints_mhc
+python -m moe.train_moe --use_moe --train_data_path data/TinyStories-train.bin --valid_data_path data/TinyStories-valid.bin --checkpoint_dir checkpoints_moe
+python -m moe.train_moe --use_hybrid_moe --train_data_path data/TinyStories-train.bin --valid_data_path data/TinyStories-valid.bin --checkpoint_dir checkpoints_hybrid
+python -m engram.train_engram_moe --checkpoint_dir checkpoints_engram
 ```
 
-### 2. 单GPU训练
+MoE 可在 CPU、单 GPU 或同一进程的多个 GPU 上放置专家，使用张量复制访问专家。当前没有实现跨进程 all-to-all 专家分片。Engram 默认训练真实二进制数据；传入 `--demo_random` 才使用随机演示数据。哈希表使用有界大小，避免按词表的 n 次方分配。
+
+## 分布式训练
+
+Linux 多 GPU 示例：
 
 ```bash
-# 基础训练
-python train.py \
-    --train_data_path data/TinyStories-train.bin \
-    --valid_data_path data/TinyStories-valid.bin \
-    --d_model 512 \
-    --n_head 8 \
-    --n_layer 6 \
-    --batch_size 16 \
-    --max_lr 3e-4 \
-    --total_steps 10000 \
-    --use_wandb
+python -m utils.torchrun --nproc_per_node 2 -m distributed.train_distribute_ddp --distributed --backend nccl --train_data_path data/TinyStories-train.bin --valid_data_path data/TinyStories-valid.bin --checkpoint_dir checkpoints_ddp
 ```
 
-### 3. 分布式训练
+`utils.torchrun` 在 Linux 调用标准启动器，在 Windows 关闭部分 PyTorch 构建缺少的 libuv 后端。Windows CPU 多进程验证使用 `--backend gloo`；NCCL 多 GPU 训练需要支持 NCCL 的 Linux 环境。
+
+MoE 分布式入口是 `distributed.train_distribute_moe_ddp`。进程按一致顺序同步所有参数，包括本进程未激活、但其他进程有梯度的专家。所有进程参与损失集合通信，只有主进程输出日志并保存文件。
+
+## 推理
 
 ```bash
-# 多GPU训练
-python distributed/train_distributed.py \
-    --train_data_path data/TinyStories-train.bin \
-    --valid_data_path data/TinyStories-valid.bin \
-    --distributed \
-    --world_size 4 \
-    --batch_size 8 \
-    --total_steps 50000 \
-    --use_wandb
+python -m inference.inference --model_path checkpoints_fixed/checkpoint_final.pt --tokenizer_path tokenizer.json --prompt "Once upon a time"
+python -m inference.vllm_inference --model_path checkpoints_fixed/checkpoint_final.pt --tokenizer_path tokenizer.json --prompt "Once upon a time"
 ```
 
-### 4. 模型推理
+普通生成按检查点配置加载基础、mHC、MoE 或 Engram 模型。分页生成当前支持基础 Transformer。投机采样需要相同分词器、相同输出词表维度及支持缓存回退的模型。
+
+历史检查点未记录完整配置。词表大小、层数、隐藏维度和前馈维度可从权重推断；头数、上下文长度及 RoPE 参数使用旧默认值或显式覆盖。现有历史文件默认按 8 个头、512 上下文和 theta=10000 解释。优先使用内嵌分词器；采样会屏蔽实际分词器之外的输出位置。
+
+## SFT、EI、DPO 与 GRPO
+
+SFT/EI 使用 Hugging Face 模型和分词器。GSM8K JSONL 每行包含 `question`、`answer`，答案可用 `####` 分隔推理与结果。EI 还支持包含 `problem`、`answer` 的 Parquet 数据。
 
 ```bash
-# 基础推理
-python inference/inference.py \
-    --model_path checkpoints/checkpoint_final.pt \
-    --prompt "Once upon a time" \
-    --max_length 100
+python -m SFT.sft_train --model_id Qwen/Qwen2.5-Math-1.5B --train_data_path data/gsm8k-train.jsonl --val_data_path data/gsm8k-val.jsonl --prompt_path prompts/r1_zero.prompt --eval_backend transformers --device cuda:0
+python -m EI.ei_train --model_id Qwen/Qwen2.5-Math-1.5B --train_data_path data/gsm8k-train.jsonl --val_data_path data/gsm8k-val.jsonl --prompt_path prompts/r1_zero.prompt --eval_backend transformers --device cuda:0
 ```
 
-## 📁 项目结构
+SFT 分别处理提示词、回答和填充位置，熵正则与主损失一起反向传播。EI 一轮没有正确候选时跳过该轮更新。
 
+DPO 数据必须包含真实的 `prompt`、`chosen`、`rejected` 三个字符串字段，格式为 JSON 数组或 JSONL：
+
+```json
+{"prompt":"问题","chosen":"偏好的回答","rejected":"不偏好的回答"}
 ```
-GPT_LM/
-├── 📂 核心组件
-│   ├── transformer.py           # 主模型类
-│   ├── transformer_block.py     # Transformer块
-│   ├── attention.py            # 注意力机制
-│   ├── emb.py                  # 嵌入层
-│   ├── rmsnorm.py              # RMSNorm归一化
-│   ├── rope.py                 # RoPE位置编码
-│   ├── swiGLU.py               # SwiGLU激活函数
-│   └── softmax.py              # 稳定Softmax
-│
-├── 📂 训练组件
-│   ├── train.py                # 单GPU训练脚本
-│   ├── adamw.py                # 自定义AdamW优化器
-│   ├── shedule.py              # 学习率调度器
-│   ├── cross_entropy.py        # 交叉熵损失
-│   ├── get_batch.py            # 批次数据获取
-│   ├── clip_gradient_noem.py   # 梯度裁剪
-│   └── checpoint_use.py        # 检查点管理
-│
-├── 📂 高级特性
-│   ├── 📂 moe_model/           # MoE实现
-│   │   ├── moe_transformer.py
-│   │   ├── moe_transformer_block.py
-│   │   ├── moe_layer.py
-│   │   ├── moe_experts.py
-│   │   └── moe_router.py
-│   │
-│   ├── 📂 vllm_support/        # vLLM推理支持
-│   │   ├── vllm_transformer.py
-│   │   ├── vllm_transformer_block.py
-│   │   ├── vllm_attention.py
-│   │   └── 📂 engine/
-│   │       ├── llm_engine.py
-│   │       ├── scheduler.py
-│   │       ├── block_manager.py
-│   │       └── sequence.py
-│   │
-│   └── 📂 distributed/         # 分布式训练
-│       ├── train_distributed.py
-│       ├── run_train.py
-│       └── base_use_zh.md
-│
-├── 📂 推理组件
-│   ├── inference/
-│   │   ├── inference.py
-│   │   └── sd_inference.py
-│   └── tokenizer.py
-│
-├── 📂 数据处理
-│   ├── dataset_process.py
-│   ├── tokenizer.json
-│   └── 📂 data/
-│       ├── TinyStories-train.bin
-│       └── TinyStories-valid.bin
-│
-├── 📂 训练输出
-│   ├── 📂 checkpoints/          # 模型检查点
-│   └── 📂 wandb/               # 训练日志
-│
-├── 📂 配置文件
-│   ├── .gitignore
-│   ├── train_win.sh            # Windows训练脚本
-│   ├── train_linux.sh          # Linux训练脚本
-│   └── LICENSE                 # Apache 2.0许可证
-│
-└── README.md                   # 项目说明文档
-```
-
-## 🏗️ 模型架构
-
-### 标准Transformer
-
-```python
-# 模型配置示例
-model = TransformerLM(
-    d_model=512,           # 模型维度
-    n_head=8,              # 注意力头数
-    n_layer=6,             # Transformer层数
-    d_ff=2048,             # 前馈网络维度
-    vocab_size=30000,      # 词表大小
-    max_seq_len=512,       # 最大序列长度
-    theta=10000.0,         # RoPE参数
-    use_rms_norm=True,     # 使用RMSNorm
-    norm_model="pre",      # Pre-norm架构
-    ffn_type="swiglu"      # SwiGLU激活函数
-)
-```
-
-### MoE Transformer
-
-```python
-# MoE模型配置
-moe_model = MoETransformerLM(
-    d_model=512,
-    n_head=8,
-    n_layer=8,
-    n_experts=8,           # 每层专家数量
-    top_k=2,               # 激活专家数
-    use_moe_aux_loss=True, # 负载均衡损失
-    moe_aux_loss_weight=0.01
-)
-```
-
-### 混合MoE架构
-
-```python
-# 混合架构（类似DeepSeek V2）
-hybrid_model = HybridMoETransformerLM(
-    d_model=512,
-    n_layer=8,
-    moe_layer_indices=[2, 5, 8],  # 指定MoE层
-    n_experts=8,
-    top_k=2
-)
-```
-
-## 🎯 训练指南
-
-### 基础训练参数
 
 ```bash
-python train.py \
-    --train_data_path data/train.bin \
-    --valid_data_path data/valid.bin \
-    --d_model 512 \
-    --n_head 8 \
-    --n_layer 6 \
-    --d_ff 2048 \
-    --vocab_size 30000 \
-    --max_seq_len 512 \
-    --batch_size 16 \
-    --max_lr 3e-4 \
-    --min_lr 3e-5 \
-    --warmup_steps 2000 \
-    --total_steps 10000 \
-    --weight_decay 0.01 \
-    --max_grad_norm 1.0 \
-    --checkpoint_dir checkpoints \
-    --save_interval 5000 \
-    --log_interval 100 \
-    --eval_interval 500 \
-    --use_wandb \
-    --wandb_project "transformer-lm"
+python -m RL.DPO --train_data_path data/preferences.jsonl --checkpoint_path checkpoints_fixed/checkpoint_final.pt --output_dir dpo_output
+python -m RL.GRPO --help
 ```
 
-### 分布式训练
+DPO/GRPO 当前支持基础 Transformer。GRPO 使用逐 token 策略比率、截断目标及 KL 项；默认奖励模型是教学用启发式评分，不能据此证明数学答案正确，也没有经过训练的奖励网络。
+
+Tron 的说明见 `tron_support/READE_TRON.md`。预训练权重必须匹配实际 LLaMA 结构，按名称严格映射。公开模型不强制要求 HF_TOKEN，受限模型仍需相应访问权限。
+
+## 验证与历史结果
 
 ```bash
-# 启动4GPU分布式训练
-python -m torch.distributed.launch \
-    --nproc_per_node=4 \
-    distributed/train_distributed.py \
-    --train_data_path data/train.bin \
-    --valid_data_path data/valid.bin \
-    --distributed \
-    --world_size 4 \
-    --batch_size 8 \
-    --gradient_accumulation_steps 4 \
-    --total_steps 50000
+python -m unittest discover -s tests -v
+python tests/smoke_training.py
 ```
 
-## 🧪 实验与消融
+第一条验证数值、梯度、缓存、分页及检查点的一致性。第二条用临时小数据实际运行训练入口，并验证检查点能重新加载，不修改现有 TinyStories 数据和模型。追加名称片段可只运行指定场景，例如 `Gloo`。
 
-### 消融实验参数
-
-```bash
-# 移除RMSNorm
-python train.py --no_rms_norm --train_data_path data/train.bin ...
-
-# 移除RoPE位置编码
-python train.py --no_rope --train_data_path data/train.bin ...
-
-# 切换归一化位置
-python train.py --norm_rope post --train_data_path data/train.bin ...
-
-# 切换激活函数
-python train.py --ffn_type silu --train_data_path data/train.bin ...
-```
-
-### 实验监控
-
-项目集成WandB进行实验追踪：
-
-```python
-# 自动记录训练指标
-wandb.init(project="transformer-lm", config=vars(args))
-wandb.log({
-    'train/loss': loss,
-    'train/learning_rate': lr,
-    'val/loss': val_loss
-})
-```
-
-## ⚡ 性能优化
-
-### 推理优化
-
-1. **KV Cache**: 减少重复计算
-2. **PagedAttention**: vLLM风格内存管理
-3. **批量推理**: 提高吞吐量
-
-### 训练优化
-
-1. **混合精度**: FP16/BF16训练
-2. **梯度累积**: 模拟大批次
-3. **分布式训练**: 多GPU并行
-4. **数据并行**: 高效数据加载
-
-### 内存优化
-
-```python
-# 检查点恢复训练
-python train.py --resume_from checkpoints/checkpoint_step_5000.pt ...
-
-# 梯度检查点（节省内存）
-model = TransformerLM(..., use_gradient_checkpointing=True)
-```
-## 🤝 贡献指南
-
-### 贡献方式
-
-1. **报告问题**: 在Issues中提交bug或功能请求
-2. **代码贡献**: Fork项目，创建分支，提交PR
-3. **文档改进**: 完善文档和示例
-4. **实验分享**: 分享您的实验结果和发现
-
-### 开发流程
-
-```bash
-# 1. Fork并克隆项目
-git clone https://github.com/yourusername/GPT_LM.git
-cd GPT_LM
-
-# 2. 创建开发分支
-git checkout -b feature/your-feature
-
-# 3. 进行开发
-# ... 编写代码 ...
-
-# 4. 提交更改
-git commit -m "Add your feature"
-
-# 5. 推送并创建PR
-git push origin feature/your-feature
-```
-
-## 📄 警示
-
-本项目仅供学习参考，禁止使用在商业项目之中
-
-## 🙏 致谢
-
-- [Attention Is All You Need](https://arxiv.org/abs/1706.03762) - 原始Transformer论文
-- [DeepSeek V2](https://github.com/deepseek-ai/DeepSeek-V2) - MoE架构参考
-- [vLLM](https://github.com/vllm-project/vllm) - PagedAttention实现参考
-- [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories) - 训练数据集
-
-## 📞 联系方式
-
-- 项目主页: [https://github.com/which_W/GPT_LM](https://github.com/which-W/GPT_LM)
-- 问题反馈: [[GitHub Issues](https://github.com/which_W/GPT_LM/issues)](https://github.com/which-W/GPT_LM/issues)
----
-
-<div align="center">
-
-**⭐ 如果这个项目对您有帮助，请给我一个Star！**
-
-Made with ❤️ by the which_W
-
-</div>
+详细修复及验证范围见 `FIXES.md`。如果历史模型曾使用错误 dtype 读取数据训练，其已学到的参数无法通过修改代码恢复正确训练结果，需要使用正确数据重新训练。现有历史文件保留供比较。

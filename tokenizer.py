@@ -1,51 +1,33 @@
-from tokenizers import Tokenizer, pre_tokenizers, normalizers
+"""从文本训练项目的 BPE 分词器；导入模块时不会开始训练或覆盖文件。"""
+import argparse
+from pathlib import Path
+from tokenizers import Tokenizer, pre_tokenizers
 from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer
-from pathlib import Path
 
-# 初始化 tokenizer
-tokenizer = Tokenizer(BPE(unk_token="<|unk|>"))
 
-# 组合多个预分词器
-tokenizer.pre_tokenizer = pre_tokenizers.Sequence([
-    # 先按空格分词
-    pre_tokenizers.Whitespace(),
-    # 将标点符号独立出来,但使用正则保护缩写词中的撇号
-    pre_tokenizers.Split(
-        pattern=r"'(?=[a-zA-Z])|(?<=[a-zA-Z])'(?![a-zA-Z])|[.,!?;:\"""''—(){}\-]|[\[\]]",
-        behavior='isolated'
-    )
-])
+def train_tokenizer(files, output_path="tokenizer.json", vocab_size=30000):
+    """使用空白及标点预分词，并同时注册终止符和未知词符号。"""
+    if not files or any(not Path(path).is_file() for path in files):
+        raise ValueError("训练文本文件不存在")
+    tokenizer = Tokenizer(BPE(unk_token="<|unk|>"))
+    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+    trainer = BpeTrainer(vocab_size=vocab_size, special_tokens=["<|endoftext|>", "<|unk|>"], show_progress=True)
+    tokenizer.train([str(path) for path in files], trainer)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    tokenizer.save(str(output_path))
+    return tokenizer
 
-# 配置训练器
-trainer = BpeTrainer(
-    vocab_size=30000,
-    special_tokens=["<|endoftext|>"],
-    show_progress=True,
-    min_frequency=1,
-)
 
-# 收集训练文件
-import os
-print(f"当前工作目录: {os.getcwd()}")
+def main():
+    parser = argparse.ArgumentParser(description="训练 BPE 分词器，之后需重新预处理 token 数据")
+    parser.add_argument("--input_paths", nargs="+", default=["data/TinyStories-train.txt"])
+    parser.add_argument("--output_path", default="tokenizer.json")
+    parser.add_argument("--vocab_size", type=int, default=30000)
+    args = parser.parse_args()
+    tokenizer = train_tokenizer(args.input_paths, args.output_path, args.vocab_size)
+    print(f"已保存分词器，实际词表大小：{tokenizer.get_vocab_size()}")
 
-data_path = Path("data")
-files = [str(data_path / "TinyStories-train.txt")]
 
-if not Path(files[0]).exists():
-    print(f"尝试查找的文件: {Path(files[0]).absolute()}")
-    print(f"data 目录下的所有文件: {list(data_path.glob('*')) if data_path.exists() else '目录不存在'}")
-    raise ValueError("找不到 TinyStories-train.txt 文件")
-
-print(f"使用训练文件: {files[0]}")
-
-print(f"找到 {len(files)} 个训练文件")
-print("开始训练 tokenizer...")
-
-# 训练 tokenizer
-tokenizer.train(files, trainer)
-
-# 保存 tokenizer
-tokenizer.save("tokenizer.json")
-print("\nTokenizer 已保存到: tokenizer.json")
-print(f"词汇表大小: {tokenizer.get_vocab_size()}")
+if __name__ == "__main__":
+    main()

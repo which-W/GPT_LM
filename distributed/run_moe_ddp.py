@@ -12,23 +12,23 @@ import os
 
 def main():
     parser = argparse.ArgumentParser(description='MoE分布式训练启动工具')
-    
+
     # 分布式配置
     parser.add_argument('--num_gpus', type=int, default=None,
                        help='使用的GPU数量(默认使用所有可用GPU)')
     parser.add_argument('--master_port', type=int, default=29500,
                        help='主节点端口')
-    
+
     # 快速配置预设
     parser.add_argument('--preset', type=str, choices=['small', 'medium', 'large'],
                        help='使用预设配置: small(4GPU), medium(4GPU大模型), large(8GPU)')
-    
+
     # 数据路径
     parser.add_argument('--train_data', type=str, required=True,
                        help='训练数据路径')
     parser.add_argument('--val_data', type=str, required=True,
                        help='验证数据路径')
-    
+
     # MoE配置
     parser.add_argument('--n_experts', type=int, default=8,
                        help='专家数量')
@@ -36,7 +36,7 @@ def main():
                        help='Top-K专家数')
     parser.add_argument('--hybrid', action='store_true',
                        help='使用混合MoE模型')
-    
+
     # 训练配置
     parser.add_argument('--batch_size', type=int, default=4,
                        help='每GPU批次大小')
@@ -47,18 +47,18 @@ def main():
     parser.add_argument('--dtype', type=str, default='bfloat16',
                        choices=['float32', 'float16', 'bfloat16'],
                        help='数据类型')
-    
-    # WandB
+
+    # 实验日志配置
     parser.add_argument('--wandb', action='store_true',
                        help='启用WandB日志')
     parser.add_argument('--wandb_project', type=str, default='moe-transformer',
                        help='WandB项目名')
     parser.add_argument('--wandb_name', type=str, default=None,
                        help='WandB运行名称')
-    
+
     # 其他参数将传递给训练脚本
     args, unknown = parser.parse_known_args()
-    
+
     # 检测可用GPU数量
     try:
         import torch
@@ -72,7 +72,7 @@ def main():
         print("无法导入torch,无法检测GPU数量")
         if args.num_gpus is None:
             args.num_gpus = 1
-    
+
     # 应用预设配置
     preset_configs = {
         'small': {
@@ -103,20 +103,22 @@ def main():
             'grad_accum': 16,
         }
     }
-    
+
+    if args.num_gpus < 1:
+        parser.error("没有可用 GPU；CPU 分布式验证请直接使用 torch.distributed.run 和 --backend gloo")
     # 构建torchrun命令
     cmd = [
-        'torchrun',
+        sys.executable, '-m', 'utils.torchrun',
         f'--nproc_per_node={args.num_gpus}',
         f'--master_port={args.master_port}',
-        'train_moe_distributed.py',
+        '-m', 'distributed.train_distribute_moe_ddp',
         '--distributed',
         f'--train_data_path={args.train_data}',
         f'--valid_data_path={args.val_data}',
         f'--dtype={args.dtype}',
         f'--total_steps={args.total_steps}',
     ]
-    
+
     # 应用预设或用户参数
     if args.preset:
         config = preset_configs[args.preset]
@@ -125,9 +127,9 @@ def main():
         print(f"  层数: {config['n_layer']}")
         print(f"  专家数: {config['n_experts']}")
         print(f"  批次大小: {config['batch_size']} × {config['grad_accum']}")
-        
+
         for key, value in config.items():
-            cmd.append(f'--{key}={value}')
+            cmd.append(f'--{"gradient_accumulation_steps" if key == "grad_accum" else key}={value}')
     else:
         # 使用用户指定的参数
         cmd.extend([
@@ -136,16 +138,16 @@ def main():
             f'--batch_size={args.batch_size}',
             f'--gradient_accumulation_steps={args.grad_accum}',
         ])
-    
+
     # 混合MoE
     if args.hybrid:
         cmd.append('--use_hybrid_moe')
         if args.preset == 'large':
-            cmd.append('--moe_layer_indices=4 8 12 16 20')
+            cmd.extend(['--moe_layer_indices', '4', '8', '12', '16', '20'])
         else:
-            cmd.append('--moe_layer_indices=2 5 8 11')
-    
-    # WandB
+            cmd.extend(['--moe_layer_indices', '2', '5', '8', '11'])
+
+    # 实验日志配置
     if args.wandb:
         cmd.append('--use_wandb')
         cmd.append(f'--wandb_project={args.wandb_project}')
@@ -156,17 +158,17 @@ def main():
             if args.preset:
                 name = f"{args.preset}-{name}"
             cmd.append(f'--wandb_run_name={name}')
-    
+
     # 添加额外参数
     cmd.extend(unknown)
-    
+
     # 打印命令
     print("\n" + "="*80)
     print("执行命令:")
     print("="*80)
     print(' \\\n  '.join(cmd))
     print("="*80 + "\n")
-    
+
     # 执行命令
     try:
         subprocess.run(cmd, check=True)

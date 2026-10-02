@@ -18,7 +18,7 @@ pip install torch transformers datasets safetensors wandb jinja2
 
 ```bash
 # 示例：DP=2, TP=2，总共使用 4 个 GPU
-python create_config.py \
+python -m tron_support.create_config \
     --out_dir tmp \
     --exp_name test_dp2_tp2 \
     --tp 2 \
@@ -50,13 +50,13 @@ Global Batch Size = mbs × grad_acc_steps × dp
 # 使用 4 个 GPU (DP=2, TP=2)
 CUDA_DEVICE_MAX_CONNECTIONS=1 torchrun \
     --nproc_per_node 4 \
-    train.py --config tmp/test_dp2_tp2/config.json
+    -m tron_support.train --config tmp/test_dp2_tp2/config.json
 ```
 
 ### 4. 提交到 Slurm 集群
 
 ```bash
-python submit_slurm_jobs.py \
+python -m tron_support.submit_slurm_jobs \
     --inp_dir tmp/test_dp2_tp2 \
     --qos high \
     --hf_token <YOUR_HF_TOKEN>
@@ -246,26 +246,26 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 
 ```bash
 # 1. 单机 4 卡训练 (DP=4)
-python create_config.py --out_dir tmp --exp_name dp4 --dp 4 --tp 1 \
+python -m tron_support.create_config --out_dir tmp --exp_name dp4 --dp 4 --tp 1 \
     --model_name HuggingFaceTB/SmolLM-360M-Instruct --mbs 8 --seq_len 1024
 
-torchrun --nproc_per_node 4 train.py --config tmp/dp4/config.json
+torchrun --nproc_per_node 4 -m tron_support.train --config tmp/dp4/config.json
 
 # 2. 单机 4 卡训练 (DP=2, TP=2)
-python create_config.py --out_dir tmp --exp_name dp2_tp2 --dp 2 --tp 2 \
+python -m tron_support.create_config --out_dir tmp --exp_name dp2_tp2 --dp 2 --tp 2 \
     --model_name HuggingFaceTB/SmolLM-360M-Instruct --mbs 4 --seq_len 1024
 
-torchrun --nproc_per_node 4 train.py --config tmp/dp2_tp2/config.json
+torchrun --nproc_per_node 4 -m tron_support.train --config tmp/dp2_tp2/config.json
 
 # 3. 单机 8 卡训练 (DP=4, TP=2)
-python create_config.py --out_dir tmp --exp_name dp4_tp2 --dp 4 --tp 2 \
+python -m tron_support.create_config --out_dir tmp --exp_name dp4_tp2 --dp 4 --tp 2 \
     --model_name meta-llama/Llama-2-7b-hf --mbs 2 --seq_len 2048 \
     --grad_acc_steps 8 --hf_token <TOKEN>
 
-torchrun --nproc_per_node 8 train.py --config tmp/dp4_tp2/config.json
+torchrun --nproc_per_node 8 -m tron_support.train --config tmp/dp4_tp2/config.json
 
 # 4. 提交到 Slurm
-python submit_slurm_jobs.py --inp_dir tmp/dp4_tp2 --qos high \
+python -m tron_support.submit_slurm_jobs --inp_dir tmp/dp4_tp2 --qos high \
     --hf_token <TOKEN>
 ```
 

@@ -11,7 +11,9 @@ def apply_tensor_parallel(model):
     def _replace_module(_module, _linear_proj_name, _style, args={}):
         assert _style in ["column", "row", 'vocab']
         linear_layer = getattr(_module, _linear_proj_name)
-        
+        if isinstance(linear_layer, (ColumnParallelLinear, RowParallelLinear, VocabParallelEmbedding)):
+            return
+
         if _style == "column":
             new_linear_layer = ColumnParallelLinear(
                 in_features=linear_layer.in_features,
@@ -45,23 +47,14 @@ def apply_tensor_parallel(model):
     for layer in model.decoder_layers:
         for module_name, linear_proj_name, style in module_linear_name_stype_mapping_list:
             _replace_module(getattr(layer, module_name), linear_proj_name, style)
-            
+
     _replace_module(model, "embedding", "vocab")
     _replace_module(model, "final_proj", "column", args={"gather_output": True})
-    
+
     return model
 
 class ColumnParallelLinear(torch.nn.Module):
-    """Column Parallel Linear layer
-    Y = XW + b, where weight matrix W is parallelized along its second dimension. W = [W_1, ..., W_p]
-    This module returns the results of Y_i = XW_i + b_i in the forward method, Y_i is parallelized in the second dimension.
-    Arguments:
-        in_features: first dimension of weight matrix W.
-        out_features: second dimension of weight matrix W.
-        bias: If true, add bias
-        init_method: method to initialize weights
-        gather_output: If true, gather the output from all the partitions. This is used for the last linear layer
-    """
+    "沿权重的输出维度分片的线性层；gather_output 控制是否汇集完整输出。"
 
     def __init__(
         self,
@@ -74,18 +67,18 @@ class ColumnParallelLinear(torch.nn.Module):
         super(ColumnParallelLinear, self).__init__()
 
         self.tp_world_size = pgm.process_group_manager.tp_world_size#例如2
-        self.tp_rank = pgm.process_group_manager.tp_rank #[cuda:0,cuda:1]
+        self.tp_rank = pgm.process_group_manager.tp_rank # 张量形状或计算公式：[cuda:0,cuda:1]
 
         self.in_features = in_features #4096
         self.out_features = out_features #4096
-        
+
         assert out_features % self.tp_world_size == 0, "Hidden dimension must be divisible by the tensor parallel world size"
         self.output_size_per_partition = out_features // self.tp_world_size
         self.gather_output = gather_output
         self.async_all_reduce = async_all_reduce
-        # Allocate space for the weight and bias
-        # Note: torch.nn.functional.linear performs XW^T + b so we exchange the order of dimensions
-        self.weight = nn.Parameter(torch.Tensor(self.output_size_per_partition, self.in_features)) # W_i
+        # 分配权重和偏置的存储空间
+        # 线性运算为 XW^T + b，因此权重按输出维度、输入维度存储
+        self.weight = nn.Parameter(torch.Tensor(self.output_size_per_partition, self.in_features)) # 当前进程的权重分片 W_i
         if bias:
             self.bias = nn.Parameter(torch.Tensor(self.output_size_per_partition))
             with torch.no_grad():
@@ -96,7 +89,7 @@ class ColumnParallelLinear(torch.nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        # Initialize weight tensor with the default initialization method used for nn.Linear in PyTorch
+        # 使用标准线性层的初始化方法生成权重
         # 步骤1: 创建完整的权重矩阵(但不需要梯度)
         master_weight = torch.empty(
             self.out_features, #4096
@@ -105,56 +98,40 @@ class ColumnParallelLinear(torch.nn.Module):
             device=self.weight.device,
             requires_grad=False #注意不需要梯度
         )
-        
-        # Calculate bound based on master weight's input dimension
+
+        # 根据完整权重的输入维度计算初始化范围
         # 步骤2: 使用标准初始化
         k = 1 / master_weight.size(1)# 1/4096
-        bound = math.sqrt(k)         # sqrt(1/4096) ≈ 0.0156
+        bound = math.sqrt(k)         # 张量形状或计算公式：sqrt(1/4096) ≈ 0.0156
         torch.nn.init.uniform_(master_weight, -bound, bound)
-        
-        # Split the model into size of self.output_size_per_partition
+
+        # 沿输出维度切分权重，每个进程保存一份分片
         # 步骤3: 切分并赋值给当前GPU
         weight_list = torch.split(master_weight, self.output_size_per_partition, dim=0)
         self.weight.data = weight_list[self.tp_rank].contiguous()
         # weight_list[0]: [2048, 4096] - 前2048行
         # weight_list[1]: [2048, 4096] - 后2048行
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
          # x: [batch, seq, 4096] - 完整输入
         if self.async_all_reduce:
-            output = linear_with_async_all_reduce(x, self.weight, self.bias) 
+            output = linear_with_async_all_reduce(x, self.weight, self.bias)
         else:
-            output = linear_with_all_reduce(x, self.weight, self.bias) 
+            output = linear_with_all_reduce(x, self.weight, self.bias)
         # output: [batch, seq, 2048] - 部分输出
         if self.gather_output:
              # 用于最后一层,需要完整输出
             output = GatherFromModelParallelRegion.apply(output)
             # output: [batch, seq, 4096] - 完整输出
-        
+
         return output
-    
+
 class RowParallelLinear(nn.Module):
-    """Linear layer with row parallelism.
-    Y = XW + b. W is parallelized along its first dimension and X along its second dimension as:
-               -   -
-              | W_1 |
-              | .   |
-          W = | .   |        X = [X_1, ..., X_p]
-              | .   |
-              | W_p |
-               -   -
-    We assume that X is already parallelized. This is the case after ColumnParallelLinear.
-    This module returns the results of Y = sum(X_i * W_i + b_i) in the forward method.
-    Arguments:
-        in_features: first dimension of matrix W.
-        out_features: second dimension of matrix W.
-        bias: If true, add bias
-        init_method: method to initialize weights.
-    """
+    "沿权重的输入维度分片的线性层；输入已按同样方式切分，各进程结果求和后返回。"
     def __init__(self, in_features: int, out_features: int, bias: bool):
         super(RowParallelLinear, self).__init__()
 
         self.tp_world_size = pgm.process_group_manager.tp_world_size
-        self.tp_rank = pgm.process_group_manager.tp_rank 
+        self.tp_rank = pgm.process_group_manager.tp_rank
 
         self.in_features = in_features
         self.out_features = out_features
@@ -164,7 +141,7 @@ class RowParallelLinear(nn.Module):
         self.weight = nn.Parameter(torch.Tensor(self.out_features, self.input_size_per_partition))
         if bias:
             self.bias = nn.Parameter(torch.Tensor(self.out_features))
-            # Always initialize bias to zero.
+            # 偏置初始化为零
             with torch.no_grad():
                 self.bias.zero_()
         else:
@@ -173,30 +150,30 @@ class RowParallelLinear(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        # Initialize weight tensor with same dtype and device as self.weight
+        # 在与参数相同的设备和精度上初始化权重
         master_weight = torch.empty(
-            self.out_features, 
-            self.in_features, 
+            self.out_features,
+            self.in_features,
             dtype=self.weight.dtype,
             device=self.weight.device,
             requires_grad=False
         )
-        
-        # Calculate bound based on master weight's input dimension
+
+        # 根据完整权重的输入维度计算初始化范围
         k = 1 / master_weight.size(1)
-        bound = math.sqrt(k)    
+        bound = math.sqrt(k)
         torch.nn.init.uniform_(master_weight, -bound, bound)
-        
-        # Split the model into size of self.input_size_per_partition
+
+        # 沿输入维度切分权重，每个进程保存一份分片
          # 按第二维(列)切分 - 注意这里不同!
         weight_list = torch.split(master_weight, self.input_size_per_partition, dim=1)
         self.weight.data = weight_list[self.tp_rank].contiguous()
         # weight_list[0]: [4096, 2048] - 前2048列
         # # weight_list[1]: [4096, 2048] - 后2048列
     def forward(self, x):
-        # X_i * W_i^T + b
+        # 当前分片计算公式：X_i * W_i^T + b
         output_parallel = F.linear(x, self.weight)
-        # All-reduce across all the partitions.
+        # 对所有分片的结果进行求和归约
         output = ReduceFromModelParallelRegion.apply(output_parallel)
         return output if self.bias is None else output + self.bias
 
@@ -223,7 +200,7 @@ class VocabParallelEmbedding(nn.Module):
         self.norm_type = norm_type
         self.scale_grad_by_freq = scale_grad_by_freq
         self.sparse = sparse
-        # Divide the weight matrix along the vocaburaly dimension.
+        # 沿词表维度切分权重矩阵
         self.vocab_start_index, self.vocab_end_index = self._vocab_range_from_global_vocab_size(
             self.num_embeddings, pgm.process_group_manager.tp_rank, pgm.process_group_manager.tp_world_size
         )
@@ -232,42 +209,37 @@ class VocabParallelEmbedding(nn.Module):
         self.weight = nn.Parameter(torch.Tensor(self.num_embeddings_per_partition, self.embedding_dim))
 
         self.reset_parameters()
-    
+
     def _vocab_range_from_global_vocab_size(self, global_vocab_size: int, rank: int, world_size: int):
-        #TODO: do some padding for the vocab size
+        # 词表大小目前必须能够整除张量并行进程数
         assert global_vocab_size % world_size == 0, f"{global_vocab_size} is not divisible by {world_size}"
         per_partition_vocab_size = global_vocab_size // world_size
-        # vocab_range_from_per_partition_vocab_size
+        # 计算当前进程对应的词表范围
         index_f = rank * per_partition_vocab_size
         index_l = index_f + per_partition_vocab_size
         return index_f, index_l
 
     def reset_parameters(self):
         master_weight = torch.empty(
-            self.num_embeddings, 
-            self.embedding_dim, 
+            self.num_embeddings,
+            self.embedding_dim,
             dtype=self.weight.dtype,
-            device=self.weight.device, 
+            device=self.weight.device,
             requires_grad=False
         )
         torch.nn.init.normal_(master_weight, mean=0.0, std=1.0)
-        # Split the model into size of self.num_embeddings_per_partition
+        # 沿词表维度切分嵌入权重
         weight_list = torch.split(master_weight, self.num_embeddings_per_partition, dim=0)
         self.weight.data = weight_list[self.tp_rank].contiguous()
 
     def forward(self, x):
-        """
-        Performs an embedding lookup for input tokens in the parallelized embedding layer
-        1. Masks tokens that fall outside the specified vocabulary range and adjusts the input
-        2. Performs embedding lookups for valid tokens, setting embeddings of out-of-vocabulary tokens to zero
-        3. Reduces the embeddings across model parallel GPUs using all-reduce for synchronization
-        """
-        # Build the mask for out-of-vocabulary tokens.
+        "执行前向计算，返回与输入批次和序列维度对应的输出。"
+        # 标记不属于当前词表分片的令牌
         input_mask = (x < self.vocab_start_index) | (x >= self.vocab_end_index)
-        # Mask the input.
+        # 调整输入索引并屏蔽当前分片以外的令牌
         masked_input = x.clone() - self.vocab_start_index
         masked_input[input_mask] = 0
-        # Get the embeddings for the valid tokens.
+        # 查找当前分片内有效令牌的嵌入
         output_parallel = F.embedding(
             masked_input,
             self.weight,
@@ -277,7 +249,7 @@ class VocabParallelEmbedding(nn.Module):
             self.scale_grad_by_freq,
             self.sparse,
         )
-        # Embedding of out-of-vocabulary tokens is set to 0.
+        # 将分片外令牌的嵌入置零，随后通过归约补齐
         output_parallel[input_mask, :] = 0.0
         output = ReduceFromModelParallelRegion.apply(output_parallel)
         return output

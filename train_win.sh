@@ -1,8 +1,6 @@
-#普通架构
-python train.py \
-  --train_data_path ./data/TinyStories-train.bin \
-  --valid_data_path ./data/TinyStories-valid.bin \
-  --batch_size 32 \
-  --use_wandb \
-  --wandb_project "tinystories-transformer" \
-  --wandb_run_name "fourth-experiment"
+#!/usr/bin/env bash
+# 供 Windows 上的 Git Bash 使用；PowerShell 用户使用 train_win.ps1。
+set -euo pipefail
+cd "$(dirname "$0")"
+PYTHON="${PYTHON:-.venv/Scripts/python.exe}"
+"$PYTHON" -m train --train_data_path data/TinyStories-train.bin --valid_data_path data/TinyStories-valid.bin --data_dtype int64 "$@"

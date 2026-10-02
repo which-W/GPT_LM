@@ -12,13 +12,13 @@ import os
 
 def main():
     parser = argparse.ArgumentParser(description='简化的分布式训练启动工具')
-    
+
     # 分布式配置
     parser.add_argument('--num_gpus', type=int, default=None,
                        help='使用的GPU数量(默认使用所有可用GPU)')
     parser.add_argument('--master_port', type=int, default=29500,
                        help='主节点端口')
-    
+
     # 多节点配置
     parser.add_argument('--num_nodes', type=int, default=1,
                        help='节点数量')
@@ -26,14 +26,14 @@ def main():
                        help='当前节点rank')
     parser.add_argument('--master_addr', type=str, default='localhost',
                        help='主节点地址')
-    
+
     # 训练脚本
-    parser.add_argument('--script', type=str, default='train_distributed.py',
+    parser.add_argument('--script', type=str, default=None,
                        help='训练脚本路径')
-    
+
     # 其他参数将传递给训练脚本
     args, unknown = parser.parse_known_args()
-    
+
     # 检测可用GPU数量
     try:
         import torch
@@ -47,14 +47,16 @@ def main():
         print("警告: 无法导入torch,无法检测GPU数量")
         if args.num_gpus is None:
             args.num_gpus = 1
-    
+
+    if args.num_gpus < 1:
+        parser.error("没有可用 GPU；CPU 分布式验证请直接使用 torch.distributed.run 和 --backend gloo")
     # 构建torchrun命令
     cmd = [
-        'torchrun',
+        sys.executable, '-m', 'utils.torchrun',
         f'--nproc_per_node={args.num_gpus}',
         f'--master_port={args.master_port}',
     ]
-    
+
     # 多节点配置
     if args.num_nodes > 1:
         cmd.extend([
@@ -62,17 +64,20 @@ def main():
             f'--node_rank={args.node_rank}',
             f'--master_addr={args.master_addr}',
         ])
-    
+
     # 添加训练脚本和参数
-    cmd.append(args.script)
+    if args.script:
+        cmd.append(args.script)
+    else:
+        cmd.extend(["-m", "distributed.train_distribute_ddp"])
     cmd.append('--distributed')
     cmd.extend(unknown)
-    
+
     # 打印命令
     print("执行命令:")
     print(' '.join(cmd))
     print()
-    
+
     # 执行命令
     try:
         subprocess.run(cmd, check=True)

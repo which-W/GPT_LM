@@ -1,23 +1,6 @@
-# Copyright 2025 Garena Online Private Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-"""
-From https://github.com/sail-sg/understand-r1-zero/blob/main/understand_r1_zero/math_grader.py
-
-Provides a math answer grading function with high recall.
-Based on HF math_verify, verl, open reasoner zero, etc.
-"""
+# 版权所有：2025 Garena Online Private Limited。
+# 本文件依据 Apache 2.0 许可证使用，许可原文与来源保存在 THIRD_PARTY_NOTICES.md。
+"提供数学答案评估，参考 https://github.com/sail-sg/understand-r1-zero/blob/main/understand_r1_zero/math_grader.py ，结合 math_verify 与字符串归一化。"
 
 import re
 import signal
@@ -45,14 +28,14 @@ AI回答的文字
                         → 传回给强化学习训练
 """
 
-# Dan Hendrycks' code
+# 参考 Dan Hendrycks 的实现
 def mathd_normalize_answer(answer: Optional[str]) -> Optional[str]:
     if answer is None:
         return None
     answer = answer.strip()
     try:
-        # Remove enclosing `\text{}`.
-        m = re.search("^\\\\text\{(?P<text>.+?)\}$", answer)
+        # 移除外层文本命令 \text{}
+        m = re.search('^\\\\text\\{(?P<text>.+?)\\}$', answer)
         if m is not None:
             answer = m.group("text").strip()
         return _strip_string(answer)
@@ -60,7 +43,7 @@ def mathd_normalize_answer(answer: Optional[str]) -> Optional[str]:
         return answer
 
 
-# units mainly from MathQA
+# 单位表主要来自 MathQA
 unit_texts = [
     "east",
     "degree",
@@ -246,7 +229,7 @@ def _strip_string(string):
             return string
 
     def _remove_right_units(string):
-        # "\\text{ " only ever occurs (at least in the val set) when describing units
+        # 文本命令用于描述单位
         if "\\text{ " in string:
             splits = string.split("\\text{ ")
             assert len(splits) == 2
@@ -268,24 +251,24 @@ def _strip_string(string):
             new_string += new_substr
         return new_string
 
-    # linebreaks
+    # 处理换行符
     string = string.replace("\n", "")
-    # print(string)
 
-    # remove inverse spaces
+
+    # 移除反斜杠空白命令
     string = string.replace("\\!", "")
-    # print(string)
 
-    # replace \\ with \
+
+    # 规范反斜杠转义
     string = string.replace("\\\\", "\\")
-    # print(string)
 
-    # matrix
-    string = re.sub(r"\\begin\{array\}\{.*?\}", r"\\begin{pmatrix}", string)
-    string = re.sub(r"\\end\{array\}", r"\\end{pmatrix}", string)
+
+    # 矩阵答案处理
+    string = re.sub('\\\\begin\\{array\\}\\{.*?\\}', r"\\begin{pmatrix}", string)
+    string = re.sub('\\\\end\\{array\\}', r"\\end{pmatrix}", string)
     string = string.replace("bmatrix", "pmatrix")
 
-    # replace tfrac and dfrac with frac
+    # 统一各种分数命令为 frac
     string = string.replace("tfrac", "frac")
     string = string.replace("dfrac", "frac")
     string = (
@@ -293,70 +276,70 @@ def _strip_string(string):
         .replace("\\leq", "\\le")
         .replace("\\geq", "\\ge")
     )
-    # print(string)
 
-    # remove \left and \right
+
+    # 移除可伸缩括号命令
     string = string.replace("\\left", "")
     string = string.replace("\\right", "")
-    # print(string)
 
-    # Remove unit: miles, dollars if after is not none
+
+    # 存在后续文本时移除英里、美元等单位
     _string = re.sub(r"\\text{.*?}$", "", string).strip()
     if _string != "" and _string != string:
-        # print("Warning: unit not removed: '{}' -> '{}'".format(string, _string))
+
         string = _string
 
-    # Remove unit: texts
+    # 移除文本形式的单位
     for _ in range(2):
         for unit_text in unit_texts:
-            # use regex, the prefix should be either the start of the string or a non-alphanumeric character
-            # the suffix should be either the end of the string or a non-alphanumeric character
+            # 使用正则要求前缀为字符串开头或非字母数字字符
+            # 后缀必须是字符串末尾或非字母数字字符
             _string = re.sub(r"(^|\W)" + unit_text + r"($|\W)", r"\1\2", string)
             if _string != "":
                 string = _string
 
-    # Remove circ (degrees)
+    # 移除角度符号
     string = string.replace("^{\\circ}", "")
     string = string.replace("^\\circ", "")
 
-    # remove dollar signs
+    # 移除数学环境的美元符号
     string = string.replace("\\$", "")
 
-    # remove units (on the right)
+    # 移除表达式右侧单位
     string = _remove_right_units(string)
 
-    # remove percentage
+    # 移除百分号
     string = string.replace("\\%", "")
-    string = string.replace("\%", "")
+    string = string.replace('\\%', "")
 
-    # " 0." equivalent to " ." and "{0." equivalent to "{." Alternatively, add "0" if "." is the start of the string
+    # 补齐小数点前的零，统一不同的小数写法
     string = string.replace(" .", " 0.")
     string = string.replace("{.", "{0.")
-    # if empty, return empty string
+    # 输入为空时返回空字符串
     if len(string) == 0:
         return string
     if string[0] == ".":
         string = "0" + string
 
-    # to consider: get rid of e.g. "k = " or "q = " at beginning
+    # 后续可考虑去除开头的变量赋值文本
     if len(string.split("=")) == 2:
         if len(string.split("=")[0]) <= 2:
             string = string.split("=")[1]
 
-    # fix sqrt3 --> sqrt{3}
+    # 补全数学表达式中的括号：fix sqrt3 转为 sqrt{3}
     string = _fix_sqrt(string)
 
-    # remove spaces
+    # 移除空格
     string = string.replace(" ", "")
 
-    # \frac1b or \frac12 --> \frac{1}{b} and \frac{1}{2}, etc. Even works with \frac1{72} (but not \frac{72}1). Also does a/b --> \\frac{a}{b}
+    # 补全数学表达式中的括号：\frac1b or \frac12 转为 \frac{1}{b} and \frac{1}{2}, etc. Even works with \frac1{72} (but not \frac{72}1). Also does a/b 转为 \\frac{a}{b}
     string = _fix_fracs(string)
 
-    # manually change 0.5 --> \frac{1}{2}
+    # 补全数学表达式中的括号：manually change 0.5 转为 \frac{1}{2}
     if string == "0.5":
         string = "\\frac{1}{2}"
 
-    # NOTE: X/Y changed to \frac{X}{Y} in dataset, but in simple cases fix in case the model output is X/Y
+    # 补全数学表达式中的括号：NOTE: X/Y changed to \frac{X}{Y} in dataset, but in simple cases fix in case the model output is X/Y
     string = _fix_a_slash_b(string)
 
     return string
@@ -423,36 +406,33 @@ REMOVED_EXPRESSIONS = [
 
 
 def normalize_final_answer(final_answer: str) -> str:
-    """
-    Normalize a final answer to a quantitative reasoning question.
-    This code comes from https://arxiv.org/pdf/2206.14858.pdf, page18.
-    """
-    # final_answer = final_answer.split("=")[-1]
+    "归一化定量推理题的最终答案，参考论文 https://arxiv.org/pdf/2206.14858.pdf 第 18 页。"
+    # 张量形状或计算公式：final_answer = final_answer.split("=")[-1]
 
     for before, after in SUBSTITUTIONS:
         final_answer = final_answer.replace(before, after)
     for expr in REMOVED_EXPRESSIONS:
         final_answer = final_answer.replace(expr, "")
 
-    # Extract answer that is in LaTeX math, is bold,
-    # is surrounded by a box, etc.
+    # 提取数学环境或加粗文本中的答案，
+    # 包括被方框包围的答案。
     final_answer = re.sub(r"(.*?)(\$)(.*?)(\$)(.*)", "$\\3$", final_answer)
-    final_answer = re.sub(r"(\\text\{)(.*?)(\})", "\\2", final_answer)
-    final_answer = re.sub(r"(\\textbf\{)(.*?)(\})", "\\2", final_answer)
-    final_answer = re.sub(r"(\\overline\{)(.*?)(\})", "\\2", final_answer)
-    final_answer = re.sub(r"(\\boxed\{)(.*)(\})", "\\2", final_answer)
+    final_answer = re.sub('(\\\\text\\{)(.*?)(\\})', "\\2", final_answer)
+    final_answer = re.sub('(\\\\textbf\\{)(.*?)(\\})', "\\2", final_answer)
+    final_answer = re.sub('(\\\\overline\\{)(.*?)(\\})', "\\2", final_answer)
+    final_answer = re.sub('(\\\\boxed\\{)(.*)(\\})', "\\2", final_answer)
 
-    # Normalize shorthand TeX:
-    # \fracab -> \frac{a}{b}
-    # \frac{abc}{bef} -> \frac{abc}{bef}
-    # \fracabc -> \frac{a}{b}c
-    # \sqrta -> \sqrt{a}
-    # \sqrtab -> sqrt{a}b
+    # 补全简写的 TeX 表达式
+    # 补全数学表达式中的括号：\fracab 转为 \frac{a}{b}
+    # 补全数学表达式中的括号：\frac{abc}{bef} 转为 \frac{abc}{bef}
+    # 补全数学表达式中的括号：\fracabc 转为 \frac{a}{b}c
+    # 补全数学表达式中的括号：\sqrta 转为 \sqrt{a}
+    # 补全数学表达式中的括号：\sqrtab 转为 sqrt{a}b
     final_answer = re.sub(r"(frac)([^{])(.)", "frac{\\2}{\\3}", final_answer)
     final_answer = re.sub(r"(sqrt)([^{])", "sqrt{\\2}", final_answer)
     final_answer = final_answer.replace("$", "")
 
-    # Normalize 100,000 -> 100000
+    # 去掉数字中的千位分隔符，例如 100,000 转为 100000
     if final_answer.replace(",", "").isdigit():
         final_answer = final_answer.replace(",", "")
 
@@ -525,12 +505,12 @@ def latex_eval(latex):
 
 
 def numeric_equal(prediction: float, reference: float):
-    # Note that relative tolerance has significant impact
-    # on the result of the synthesized GSM-Hard dataset
-    # if reference.is_integer():
-    #     return isclose(reference, round(prediction), abs_tol=1e-4)
-    # else:
-    # prediction = round(prediction, len(str(reference).split(".")[-1]))
+    # 相对误差容限会明显影响评估结果
+    # 尤其会影响合成 GSM-Hard 数据集的评估结果
+
+
+
+    # 张量形状或计算公式：prediction = round(prediction, len(str(reference).split(".")[-1]))
     return isclose(reference, prediction, rel_tol=1e-4)
 
 
@@ -549,21 +529,21 @@ def symbolic_equal(a, b):
     a = _parse(a)
     b = _parse(b)
 
-    # direct equal
+    # 直接比较答案
     try:
         if str(a) == str(b) or a == b:
             return True
     except:
         pass
 
-    # simplify equal
+    # 化简后比较等价性
     try:
         if a.equals(b) or simplify(a - b) == 0:
             return True
     except:
         pass
 
-    # equation equal
+    # 比较方程的等价性
     try:
         if (abs(a.lhs - a.rhs)).equals(abs(b.lhs - b.rhs)):
             return True
@@ -576,9 +556,9 @@ def symbolic_equal(a, b):
     except:
         pass
 
-    # matrix
+    # 矩阵答案处理
     try:
-        # if a and b are matrix
+        # 输入均为矩阵时逐项比较
         if a.shape == b.shape:
             _a = a.applyfunc(lambda x: round(x, 3))
             _b = b.applyfunc(lambda x: round(x, 3))
@@ -618,7 +598,7 @@ def is_latex_equal(given_answer: str, ground_truth: str) -> bool:
                     len(ground_truth) > 128 and repeatness(ground_truth)
                 ):
                     return False
-                # First conduct normalized string matching.
+                # 先对归一化后的字符串执行匹配
                 ground_truth_normalized = _normalize(ground_truth)
                 given_normalized = _normalize(given_answer)
                 if ground_truth_normalized is None:
@@ -626,7 +606,7 @@ def is_latex_equal(given_answer: str, ground_truth: str) -> bool:
                 if ground_truth_normalized == given_normalized:
                     return True
 
-                # Next call math verify.
+                # 随后使用数学表达式验证器判断
                 given_answer.replace("\n", "")
                 ground_truth.replace("\n", "")
                 if "$" not in given_answer:
@@ -656,7 +636,7 @@ def is_latex_equal(given_answer: str, ground_truth: str) -> bool:
                     ),
                     timeout_seconds=1,
                 )
-                # or symbolic_equal(ground_truth, given_answer)
+
             except Exception:
                 return False
     except TimeoutError:
@@ -678,14 +658,14 @@ def is_value_equal(given_answer: str, ground_truth: str) -> bool:
         return str_equal
 
 
-# sympy might hang -- we don't care about trying to be lenient in these cases
+# 某些表达式会导致符号计算长时间运行，此时不尝试宽松匹配
 BAD_SUBSTRINGS = ["^{", "^("]
-BAD_REGEXES = ["\^[0-9]+\^", "\^[0-9][0-9]+"]
+BAD_REGEXES = ['\\^[0-9]+\\^', '\\^[0-9][0-9]+']
 TUPLE_CHARS = "()[]"
 
 
 def _sympy_parse(expr: str):
-    """Parses an expression with sympy."""
+    "将表达式解析为符号计算对象。"
     py_expr = expr.replace("^", "**")
     return sympy_parser.parse_expr(
         py_expr,
@@ -697,13 +677,13 @@ def _sympy_parse(expr: str):
 
 
 def _parse_latex(expr: str) -> str:
-    """Attempts to parse latex to an expression sympy can read."""
+    "尝试将 LaTeX 解析为符号表达式。"
     expr = expr.replace("\\tfrac", "\\frac")
     expr = expr.replace("\\dfrac", "\\frac")
-    expr = expr.replace("\\frac", " \\frac")  # Play nice with mixed numbers.
+    expr = expr.replace("\\frac", " \\frac")  # 兼容带分数格式
     expr = latex2text.LatexNodes2Text().latex_to_text(expr)
 
-    # Replace the specific characters that this parser uses.
+    # 替换解析器需要归一化的特殊字符
     expr = expr.replace("√", "sqrt")
     expr = expr.replace("π", "pi")
     expr = expr.replace("∞", "inf")
@@ -749,18 +729,15 @@ def _str_to_int(x: str) -> bool:
 
 
 def _inject_implicit_mixed_number(step: str):
-    """
-    Automatically make a mixed number evalable
-    e.g. 7 3/4 => 7+3/4
-    """
+    "将带分数改写为可计算的加法，例如 7 3/4 转为 7+3/4。"
     p1 = re.compile("([0-9]) +([0-9])")
-    step = p1.sub("\\1+\\2", step)  ## implicit mults
+    step = p1.sub("\\1+\\2", step)  # 处理隐式乘法
     return step
 
 
 def _strip_properly_formatted_commas(expr: str):
-    # We want to be careful because we don't want to strip tuple commas
-    p1 = re.compile("(\d)(,)(\d\d\d)($|\D)")
+    # 保留元组中的逗号，仅移除千位分隔符
+    p1 = re.compile('(\\d)(,)(\\d\\d\\d)($|\\D)')
     while True:
         next_expr = p1.sub("\\1\\3\\4", expr)
         if next_expr == expr:
@@ -770,12 +747,12 @@ def _strip_properly_formatted_commas(expr: str):
 
 
 def _normalize(expr: str) -> str:
-    """Normalize answer expressions."""
+    "归一化答案表达式。"
     if expr is None:
         return None
 
-    # Remove enclosing `\text{}`.
-    m = re.search("^\\\\text\{(?P<text>.+?)\}$", expr)
+    # 移除外层文本命令 \text{}
+    m = re.search('^\\\\text\\{(?P<text>.+?)\\}$', expr)
     if m is not None:
         expr = m.group("text")
 
@@ -808,8 +785,8 @@ def _normalize(expr: str) -> str:
         "inch",
         "yard",
     ]:
-        expr = re.sub(f"{unit}(es)?(s)? *(\^[0-9]+)?", "", expr)
-    expr = re.sub("\^ *\\\\circ", "", expr)
+        expr = re.sub(f"{unit}(es)?(s)? *(\\^[0-9]+)?", "", expr)
+    expr = re.sub('\\^ *\\\\circ', "", expr)
 
     if len(expr) > 0 and expr[0] == "{" and expr[-1] == "}":
         expr = expr[1:-1]
@@ -823,17 +800,17 @@ def _normalize(expr: str) -> str:
         except:
             pass
 
-    # edge case with mixed numbers and negative signs
+    # 处理带分数和负号同时出现的边界情况
     expr = re.sub("- *", "-", expr)
 
     expr = _inject_implicit_mixed_number(expr)
     expr = expr.replace(" ", "")
 
-    # if we somehow still have latex braces here, just drop them
+    # 移除归一化后仍残留的 TeX 花括号
     expr = expr.replace("{", "")
     expr = expr.replace("}", "")
 
-    # don't be case sensitive for text answers
+    # 文本答案比较时忽略大小写
     expr = expr.lower()
 
     if _str_is_int(expr):
@@ -850,7 +827,7 @@ def count_unknown_letters_in_expr(expr: str):
 
 
 def should_allow_eval(expr: str):
-    # we don't want to try parsing unknown text or functions of more than two variables
+    # 不解析未知文本或超过两个变量的函数
     if count_unknown_letters_in_expr(expr) > 2:
         return False
 
@@ -880,9 +857,7 @@ def are_equal_under_sympy(ground_truth_normalized: str, given_normalized: str):
 
 
 def split_tuple(expr: str):
-    """
-    Split the elements in a tuple/interval, while handling well-formatted commas in large numbers
-    """
+    "切分元组或区间，同时保留数字中的千位分隔符。"
     expr = _strip_properly_formatted_commas(expr)
     if len(expr) == 0:
         return []
@@ -937,7 +912,7 @@ def remove_boxed(s):
 
 
 def extract_boxed_answer(solution: str) -> str:
-    """Extract the answer from inside a LaTeX \\boxed{} command"""
+    "提取 LaTeX 方框命令中的答案。"
     solution = last_boxed_only_string(solution)
     solution = remove_boxed(solution)
     return solution
@@ -969,11 +944,11 @@ def grade_answer_sympy(given_answer: str, ground_truth: str) -> bool:
     else:
         for ground_truth_elem, given_elem in zip(ground_truth_elems, given_elems):
             if _is_frac(ground_truth_elem) and _is_frac(given_elem):
-                # if fractions aren't reduced, then shouldn't be marked as correct
-                # so, we don't want to allow sympy.simplify in this case
+                # 未约分的分数不直接认定为正确
+                # 该情况不使用符号化简来放宽判断
                 is_correct = ground_truth_elem == given_elem
             elif _str_is_int(ground_truth_elem) != _str_is_int(given_elem):
-                # if the ground truth answer is an integer, we require the given answer to be a strict match (no sympy.simplify)
+                # 标准答案为整数时要求严格匹配，避免符号化简放宽判断
                 is_correct = False
             else:
                 is_correct = are_equal_under_sympy(ground_truth_elem, given_elem)
@@ -987,7 +962,7 @@ def grade_answer_mathd(given_answer: str, ground_truth: str) -> bool:
     ground_truth_normalized_mathd = mathd_normalize_answer(ground_truth)
     given_answer_normalized_mathd = mathd_normalize_answer(given_answer)
 
-    # be at least as lenient as mathd
+    # 兼容已有数学评估器接受的表达式形式
     if ground_truth_normalized_mathd == given_answer_normalized_mathd:
         return True
     return False
@@ -1006,8 +981,8 @@ def grade(model_answer: str, gt_answer: str, fast: bool = True):
         model_answer, gt_answer
     )
     if not fast:
-        # This mode further uses math_verify to recall originally false positives.
-        # Will be a bit slower, and sensitive to bad inputs.
+        # 进一步调用数学验证器复核字符串匹配失败的答案
+        # 表达式验证速度较慢，也可能受到异常输入影响
         correct = correct or is_latex_equal(
             model_answer,
             gt_answer,
@@ -1016,7 +991,7 @@ def grade(model_answer: str, gt_answer: str, fast: bool = True):
 
 
 def r1_zero_reward_fn(response, ground_truth, fast=True):
-    # We are strict about format to evaluate our models.
+    # 评估时严格检查回答格式
     if "</think> <answer>" in response and "</answer>" in response:
         model_answer = response.split("<answer>")[-1].replace("</answer>", "")
         if "\\boxed" in model_answer:
@@ -1042,14 +1017,14 @@ def r1_zero_reward_fn(response, ground_truth, fast=True):
                 "reward": 1.0
             }
         else:
-            # Formatted but wrong answer; no format reward to avoid hacking.
+            # 格式正确但答案错误时，不给予格式奖励
             return {
                 "format_reward": 1.0,
                 "answer_reward": 0.0,
                 "reward": 0.0
             }
     else:
-        # Unformatted.
+        # 回答格式不符合要求
         return {
             "format_reward": 0.0,
             "answer_reward": 0.0,
@@ -1060,7 +1035,7 @@ def r1_zero_reward_fn(response, ground_truth, fast=True):
 def question_only_reward_fn(response, ground_truth, fast=True):
     model_answer = extract_answer(response)
     if model_answer is None:
-        # Cannot even parse anything.
+        # 表达式无法解析
         return {
             "format_reward": 0.0,
             "answer_reward": 0.0,
@@ -1075,14 +1050,14 @@ def question_only_reward_fn(response, ground_truth, fast=True):
         for gt in ground_truth:
             is_correct |= grade(model_answer, gt, fast)
     if is_correct:
-        # Correctness reward.
+        # 答案正确性奖励
         return {
             "format_reward": 1.0,
             "answer_reward": 1.0,
             "reward": 1.0
         }
     else:
-        # Formatted but wrong answer; no format reward to avoid hacking.
+        # 格式正确但答案错误时，不给予格式奖励
         return {
             "format_reward": 1.0,
             "answer_reward": 0.0,
