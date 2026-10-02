@@ -75,7 +75,7 @@ def parse_args():
                        help='数据类型')
 
     parser.add_argument("--data_dtype", choices=TOKEN_DTYPES, default="int64")
-    parser.add_argument("--tokenizer_path", default="tokenizer.json")
+    parser.add_argument("--tokenizer_path", default="tokenizer_tinystories.json")
     return parser.parse_args()
 
 
@@ -107,14 +107,14 @@ def train(args):
     if not os.path.exists(args.train_data_path):
         raise FileNotFoundError(f"数据文件不存在: {args.train_data_path}")
 
-    train_data = load_token_data(args.train_data_path, args.data_dtype, args.tokenizer_path)
+    train_data = load_token_data(args.train_data_path, args.data_dtype, args.tokenizer_path, args.vocab_size)
     print(f"训练数据: {args.train_data_path}, 数据量: {len(train_data):,} tokens")
 
     val_data = None
     if args.valid_data_path:
         if not os.path.exists(args.valid_data_path):
             raise FileNotFoundError(f"验证数据文件不存在: {args.valid_data_path}")
-        val_data = load_token_data(args.valid_data_path, args.data_dtype, args.tokenizer_path)
+        val_data = load_token_data(args.valid_data_path, args.data_dtype, args.tokenizer_path, args.vocab_size)
         print(f"验证数据: {args.valid_data_path}, 数据量: {len(val_data):,} tokens")
 
     #处理消融实验逻辑

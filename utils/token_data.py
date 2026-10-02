@@ -9,7 +9,7 @@ import numpy as np
 TOKEN_DTYPES = ("int64", "uint16", "uint32")
 
 
-def load_token_data(path, dtype="int64", tokenizer_path=None):
+def load_token_data(path, dtype="int64", tokenizer_path=None, vocab_size=None):
     path = Path(path)
     metadata_path = Path(str(path) + ".meta.json")
     metadata = {}
@@ -33,6 +33,21 @@ def load_token_data(path, dtype="int64", tokenizer_path=None):
     data = np.memmap(path, dtype=dtype, mode="r")
     if "num_tokens" in metadata and len(data) != metadata["num_tokens"]:
         raise ValueError(f"{path}: token count does not match metadata")
+    if tokenizer_path is not None or vocab_size is not None:
+        minimum, maximum = int(data.min()), int(data.max())
+        if minimum < 0:
+            raise ValueError(f"{path}: 数据中存在负数 token 编号")
+        if tokenizer_path is not None:
+            from tokenizers import Tokenizer
+            tokenizer = Tokenizer.from_file(str(tokenizer_path))
+            largest_token = max(tokenizer.get_vocab().values())
+            if maximum > largest_token:
+                raise ValueError(f"{path}: 数据最大 token 编号为 {maximum}，分词器最大编号为 {largest_token}；"
+                                 "请使用原始分词器或重新生成数据，不能只增大模型词表")
+            if vocab_size is not None and largest_token >= vocab_size:
+                raise ValueError("模型词表不能小于分词器所使用的 token 编号范围")
+        if vocab_size is not None and maximum >= vocab_size:
+            raise ValueError(f"{path}: 数据 token 编号超出模型词表范围 {vocab_size}")
     return data
 
 
@@ -40,7 +55,7 @@ class TokenWindowDataset:
     """连续语言模型窗口，额外保留一个目标 token。"""
 
     def __init__(self, path, seq_len, dtype="int64", vocab_size=None, tokenizer_path=None):
-        self.data = load_token_data(path, dtype, tokenizer_path)
+        self.data = load_token_data(path, dtype, tokenizer_path, vocab_size)
         self.seq_len = seq_len
         self.vocab_size = vocab_size
         if seq_len < 1 or len(self.data) <= seq_len:

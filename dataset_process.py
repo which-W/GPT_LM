@@ -6,7 +6,7 @@ import hashlib
 import json
 from utils.token_data import TOKEN_DTYPES
 
-def preprocess_file(input_file, output_file, tokenizer_path="tokenizer.json", chunk_size=10_000_000, dtype="int64"):
+def preprocess_file(input_file, output_file, tokenizer_path="tokenizer_tinystories.json", chunk_size=10_000_000, dtype="int64"):
     """
     将文本文件转换为二进制token文件(分块处理避免内存溢出)
     
@@ -70,7 +70,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Encode text as a binary token file")
     parser.add_argument("--input_path")
     parser.add_argument("--output_path")
-    parser.add_argument("--tokenizer_path", default="tokenizer.json")
+    parser.add_argument("--tokenizer_path", default="tokenizer_tinystories.json")
     parser.add_argument("--dtype", choices=TOKEN_DTYPES, default="int64")
     parser.add_argument("--chunk_size", type=int, default=10_000_000)
     args = parser.parse_args()

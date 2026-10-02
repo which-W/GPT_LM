@@ -10,7 +10,7 @@ from typing import Optional, Dict
 import os
 import argparse
 from utils.token_data import TokenWindowDataset, TOKEN_DTYPES
-from checkpoint_use import save_checkpoint
+from checkpoint_use import model_config
 from engram.engram_moe_transformer import EngramMoETransformerLM, FlexibleEngramMoELM
 
 
@@ -39,194 +39,98 @@ def train_engram_moe_model(
     learning_rate: float = 3e-4,
     device: Optional[torch.device] = None,
     checkpoint_dir: str = "./checkpoints",
-    log_interval: int = 10
+    log_interval: int = 10,
+    max_steps: int = 0,
+    eval_steps: int = 0,
+    dtype: torch.dtype = torch.float32,
 ):
-    """
-    训练 Engram + MoE 模型
-    
-    参数：
-        model: Engram+MoE模型
-        train_loader: 训练数据加载器
-        val_loader: 验证数据加载器
-        n_epochs: 训练轮数
-        learning_rate: 学习率
-        device: 训练设备
-        checkpoint_dir: 检查点保存目录
-        log_interval: 日志打印间隔
-    """
-
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # 优化器
-    # 论文中: Engram参数使用Adam,学习率放大5倍,无权重衰减
-    # 其他参数使用Muon优化器(这里简化使用AdamW)
-
-    engram_params = []
-    other_params = []
-
+    """按轮次或总步数训练；限制验证批次数，并保存最终状态。"""
+    from utils.precision import TrainingPrecision
+    if min(n_epochs, log_interval) < 1 or min(max_steps, eval_steps) < 0:
+        raise ValueError("轮数和日志间隔必须为正，步数限制不能为负")
+    if not len(train_loader):
+        raise ValueError("训练数据不足一个批次")
+    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    precision = TrainingPrecision(device, dtype)
+    engram_params, other_params = [], []
     for name, param in model.named_parameters():
-        if 'engram' in name:
-            engram_params.append(param)
-        else:
-            other_params.append(param)
-
+        (engram_params if 'engram' in name else other_params).append(param)
+    # 记忆模块使用五倍学习率，并关闭权重衰减。
     optimizer = torch.optim.AdamW([
         {'params': other_params, 'lr': learning_rate, 'weight_decay': 0.1},
-        {'params': engram_params, 'lr': learning_rate * 5, 'weight_decay': 0.0}  # 论文配置
+        {'params': engram_params, 'lr': learning_rate * 5, 'weight_decay': 0.0},
     ])
-
-    # 学习率调度器
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=n_epochs * len(train_loader)
-    )
-
-    # 创建检查点目录
+    budget = max_steps or n_epochs * len(train_loader)
+    epochs = (budget + len(train_loader) - 1) // len(train_loader)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=budget)
     os.makedirs(checkpoint_dir, exist_ok=True)
+    global_step, best_val_loss = 0, float('inf')
+    print(f"设备：{device}，训练目标：{budget} 步，精度：{dtype}")
 
-    # 训练循环
-    global_step = 0
-    best_val_loss = float('inf')
+    def store(filename, epoch, val_loss=None):
+        state = dict(model_state_dict=model.state_dict(), optimizer_state_dict=optimizer.state_dict(),
+                     scheduler_state_dict=scheduler.state_dict(), iteration=global_step, epoch=epoch,
+                     config=model_config(model), tokenizer_json=getattr(model, 'tokenizer_json', None))
+        if val_loss is not None:
+            state['val_loss'] = val_loss
+        torch.save(state, os.path.join(checkpoint_dir, filename))
 
-    print(f"\n{'='*60}")
-    print(f"开始训练 Engram + MoE 模型")
-    print(f"{'='*60}")
-    print(f"设备: {device}")
-    print(f"训练样本数: {len(train_loader.dataset)}")
-    print(f"批大小: {train_loader.batch_size}")
-    print(f"训练轮数: {n_epochs}")
-    print(f"学习率: {learning_rate}")
-    print(f"{'='*60}\n")
-
-    for epoch in range(n_epochs):
+    for epoch in range(epochs):
         model.train()
-        epoch_loss = 0.0
-        epoch_lm_loss = 0.0
-        epoch_aux_loss = 0.0
-
-        for batch_idx, tokens in enumerate(train_loader):
+        epoch_loss, batches = 0.0, 0
+        for tokens in train_loader:
             tokens = tokens.to(device)
-
-            # 前向传播
-            # 输入: [batch_size, seq_len]
-            # 输出: [batch_size, seq_len, vocab_size]
-            logits = model(tokens[:, :-1])  # 预测下一个token
-
-            # 计算语言模型损失
-            targets = tokens[:, 1:]  # 目标是下一个token
-            lm_loss = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                targets.reshape(-1),
-                reduction='mean'
-            )
-
-            # 获取MoE辅助损失
-            aux_loss = model.get_aux_loss()
-
-            # 总损失 = 语言模型损失 + MoE辅助损失
-            total_loss = lm_loss + aux_loss
-
-            # 反向传播
-            optimizer.zero_grad()
-            total_loss.backward()
-
-            # 梯度裁剪
+            optimizer.zero_grad(set_to_none=True)
+            with precision.context():
+                logits = model(tokens[:, :-1])
+                lm_loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), tokens[:, 1:].reshape(-1))
+                total_loss = lm_loss + model.get_aux_loss()
+            precision.backward(total_loss)
+            precision.unscale(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
-            optimizer.step()
+            precision.step(optimizer)
             scheduler.step()
-
-            # 累计损失
-            epoch_loss += total_loss.item()
-            epoch_lm_loss += lm_loss.item()
-            epoch_aux_loss += aux_loss.item()
             global_step += 1
-
-            # 打印日志
-            if (batch_idx + 1) % log_interval == 0:
-                avg_loss = epoch_loss / (batch_idx + 1)
-                avg_lm_loss = epoch_lm_loss / (batch_idx + 1)
-                avg_aux_loss = epoch_aux_loss / (batch_idx + 1)
-
-                print(f"Epoch [{epoch+1}/{n_epochs}] "
-                      f"Batch [{batch_idx+1}/{len(train_loader)}] "
-                      f"Loss: {avg_loss:.4f} "
-                      f"(LM: {avg_lm_loss:.4f}, Aux: {avg_aux_loss:.6f}) "
-                      f"LR: {scheduler.get_last_lr()[0]:.6f}")
-
-        # Epoch结束
-        avg_epoch_loss = epoch_loss / len(train_loader)
-        avg_epoch_lm_loss = epoch_lm_loss / len(train_loader)
-        avg_epoch_aux_loss = epoch_aux_loss / len(train_loader)
-
-        print(f"\n{'='*60}")
-        print(f"Epoch {epoch+1} 完成")
-        print(f"平均损失: {avg_epoch_loss:.4f}")
-        print(f"  - LM损失: {avg_epoch_lm_loss:.4f}")
-        print(f"  - Aux损失: {avg_epoch_aux_loss:.6f}")
-
-        # 验证
+            batches += 1
+            epoch_loss += total_loss.item()
+            if global_step % log_interval == 0:
+                print(f"训练步 {global_step}/{budget}，平均损失 {epoch_loss / batches:.4f}")
+            if global_step >= budget:
+                break
+        print(f"轮次 {epoch + 1}，平均损失 {epoch_loss / batches:.4f}")
         if val_loader is not None:
-            val_loss = evaluate_model(model, val_loader, device)
-            print(f"验证损失: {val_loss:.4f}")
-
-            # 保存最佳模型
+            val_loss = evaluate_model(model, val_loader, device, eval_steps, precision)
+            print(f"验证损失：{val_loss:.4f}")
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                checkpoint_path = os.path.join(checkpoint_dir, 'best_model.pt')
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'val_loss': val_loss,
-                    'config': dict(model.config),
-                    'tokenizer_json': getattr(model, 'tokenizer_json', None),
-                }, checkpoint_path)
-                print(f"✓ 保存最佳模型到 {checkpoint_path}")
-
-        print(f"{'='*60}\n")
-
-        # 保存定期检查点
+                store('best_model.pt', epoch, val_loss)
         if (epoch + 1) % 5 == 0:
-            checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch+1}.pt')
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'config': dict(model.config),
-                'tokenizer_json': getattr(model, 'tokenizer_json', None),
-            }, checkpoint_path)
-            print(f"✓ 保存检查点到 {checkpoint_path}\n")
-
-    print("训练完成!")
+            store(f'checkpoint_epoch_{epoch + 1}.pt', epoch)
+        if global_step >= budget:
+            break
+    store('checkpoint_final.pt', epoch)
+    print(f"训练完成，实际更新 {global_step} 步")
     return model
 
 
-def evaluate_model(
-    model: nn.Module,
-    val_loader: DataLoader,
-    device: torch.device
-) -> float:
-    """评估模型"""
+def evaluate_model(model, val_loader, device, max_steps=0, precision=None) -> float:
+    """按实际处理批次计算验证均值，可限制验证步数。"""
+    from contextlib import nullcontext
     model.eval()
-    total_loss = 0.0
-
+    total_loss, batches = 0.0, 0
     with torch.no_grad():
         for tokens in val_loader:
             tokens = tokens.to(device)
-
-            logits = model(tokens[:, :-1])
-            targets = tokens[:, 1:]
-
-            loss = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                targets.reshape(-1),
-                reduction='mean'
-            )
-
+            with precision.context() if precision else nullcontext():
+                logits = model(tokens[:, :-1])
+                loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), tokens[:, 1:].reshape(-1))
             total_loss += loss.item()
-
-    return total_loss / len(val_loader)
+            batches += 1
+            if max_steps and batches >= max_steps:
+                break
+    if not batches:
+        raise ValueError("验证数据不足一个批次")
+    return total_loss / batches
 
 
 def main():
@@ -235,7 +139,7 @@ def main():
     parser.add_argument('--train_data_path', default='data/TinyStories-train.bin')
     parser.add_argument('--valid_data_path', default='data/TinyStories-valid.bin')
     parser.add_argument('--data_dtype', choices=TOKEN_DTYPES, default='int64')
-    parser.add_argument('--tokenizer_path', default='tokenizer.json')
+    parser.add_argument('--tokenizer_path', default='tokenizer_tinystories.json')
     parser.add_argument('--demo_random', action='store_true')
     parser.add_argument('--vocab_size', type=int, default=30000)
     parser.add_argument('--d_model', type=int, default=128)
@@ -245,6 +149,10 @@ def main():
     parser.add_argument('--seq_len', type=int, default=128)
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--n_epochs', type=int, default=1)
+    parser.add_argument('--max_steps', type=int, default=0, help='总更新步数；零表示按轮数训练')
+    parser.add_argument('--eval_steps', type=int, default=0, help='验证批次数；零表示完整验证')
+    parser.add_argument('--log_interval', type=int, default=10)
+    parser.add_argument('--dtype', choices=['float32', 'float16', 'bfloat16'], default='float32')
     parser.add_argument('--learning_rate', type=float, default=3e-4)
     parser.add_argument('--n_experts', type=int, default=4)
     parser.add_argument('--top_k', type=int, default=2)
@@ -274,7 +182,9 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size)
     train_engram_moe_model(model, train_loader, val_loader, n_epochs=args.n_epochs,
                            learning_rate=args.learning_rate, device=model.main_device,
-                           checkpoint_dir=args.checkpoint_dir)
+                           checkpoint_dir=args.checkpoint_dir, max_steps=args.max_steps,
+                           eval_steps=args.eval_steps, log_interval=args.log_interval,
+                           dtype=getattr(torch, args.dtype))
 
 
 if __name__ == '__main__':

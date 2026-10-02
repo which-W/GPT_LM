@@ -58,7 +58,7 @@ def load_math12k_dataset(path, prompt_template=None):
 def load_gsm8k_dataset(path, prompt_template=None):
 
     processed_items = []
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         for line in f:
             item = json.loads(line)
             q_text = item['question']
@@ -201,7 +201,8 @@ def run_expert_iteration(args):
 
         print(f">> 正在对新数据进行预分词...")
         tokenized_expert_data = tokenize_prompt_and_output(
-            [ex['prompt'] for ex in expert_raw_data], [ex['response'] for ex in expert_raw_data], tokenizer
+            [ex['prompt'] for ex in expert_raw_data], [ex['response'] for ex in expert_raw_data], tokenizer,
+            max_length=args.max_train_len,
         )
 
         print(f">> 启动 SFT 训练: 执行 {train_steps} 步更新 (等效 {args.epochs_per_ei} Epochs)...")
@@ -309,6 +310,7 @@ if __name__ == "__main__":
     parser.add_argument("--micro_batch_size", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max_tokens", type=int, default=1024)
+    parser.add_argument("--max_train_len", type=int, default=1024, help="专家样本的最大训练序列长度")
 
     # EI 动态参数
     parser.add_argument("--n_ei_steps", type=int, default=5, help="外层迭代轮数")

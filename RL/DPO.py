@@ -106,8 +106,8 @@ class PreferenceDataset(Dataset):
     """读取包含 prompt、chosen、rejected 三个文本字段的偏好数据。"""
     def __init__(self, data_path, tokenizer=None):
         self.tokenizer = tokenizer
-        with open(data_path, encoding="utf-8") as f:
-            self.data = [json.loads(line) for line in f if line.strip()] if str(data_path).endswith(".jsonl") else json.load(f)
+        with open(data_path, encoding="utf-8-sig") as f:
+            self.data = [json.loads(line) for line in f if line.strip()] if str(data_path).lower().endswith(".jsonl") else json.load(f)
         if not self.data or any(any(not isinstance(item.get(k), str) for k in ("prompt", "chosen", "rejected")) for item in self.data):
             raise ValueError("偏好数据不能为空，且必须包含 prompt、chosen、rejected 文本字段")
 
@@ -118,13 +118,13 @@ class PreferenceDataset(Dataset):
         return {key: self.data[index][key] for key in ("prompt", "chosen", "rejected")}
 
 
-def create_tokenizer(path="tokenizer.json"):
+def create_tokenizer(path="tokenizer_tinystories.json"):
     """使用项目本地分词器，避免另一个词表中的令牌越界。"""
     tokenizer = PreTrainedTokenizerFast(tokenizer_file=str(path), eos_token="<|endoftext|>", pad_token="<|endoftext|>")
     return tokenizer
 
 
-def load_policy(checkpoint_path=None, tokenizer_path="tokenizer.json", **model_options):
+def load_policy(checkpoint_path=None, tokenizer_path="tokenizer_tinystories.json", **model_options):
     """优先使用检查点内嵌分词器及结构；无检查点时创建小型模型。"""
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True) if checkpoint_path else None
     if checkpoint is not None:
@@ -153,27 +153,41 @@ def main():
     parser.add_argument("--train_data_path", required=True)
     parser.add_argument("--val_data_path")
     parser.add_argument("--checkpoint_path")
-    parser.add_argument("--tokenizer_path", default="tokenizer.json")
+    parser.add_argument("--tokenizer_path", default="tokenizer_tinystories.json")
     parser.add_argument("--output_dir", default="dpo_output")
     parser.add_argument("--max_steps", type=int, default=-1)
+    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
+    parser.add_argument("--learning_rate", type=float, default=5e-6)
+    parser.add_argument("--max_length", type=int, default=512)
+    parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="float32")
+    parser.add_argument("--resume_from", help="恢复 Hugging Face Trainer 检查点目录")
     args = parser.parse_args()
+    if args.resume_from and not args.checkpoint_path:
+        parser.error("DPO 恢复需要 checkpoint_path 指向原始基础模型，以保持参考策略一致")
     train = HFDataset.from_list(PreferenceDataset(args.train_data_path).data)
     validation = HFDataset.from_list(PreferenceDataset(args.val_data_path).data) if args.val_data_path else None
-    model, tokenizer = load_policy(args.checkpoint_path, args.tokenizer_path)
+    if min(args.batch_size, args.gradient_accumulation_steps, args.max_length) < 1:
+        parser.error("批大小、梯度累积和序列长度必须为正")
+    model, tokenizer = load_policy(args.checkpoint_path, args.tokenizer_path, max_seq_len=args.max_length)
     ref_model = copy.deepcopy(model).eval().requires_grad_(False)
     options = dict(output_dir=args.output_dir, num_train_epochs=3, max_steps=args.max_steps,
-                   per_device_train_batch_size=4, per_device_eval_batch_size=4,
-                   gradient_accumulation_steps=4, learning_rate=5e-6, beta=0.1,
-                   max_length=min(512, model.config.max_seq_len),
-                   max_prompt_length=min(256, model.config.max_seq_len // 2),
-                   bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
+                   per_device_train_batch_size=args.batch_size, per_device_eval_batch_size=args.batch_size,
+                   gradient_accumulation_steps=args.gradient_accumulation_steps, learning_rate=args.learning_rate, beta=0.1,
+                   max_length=min(args.max_length, model.config.max_seq_len),
+                   max_prompt_length=min(args.max_length, model.config.max_seq_len) // 2,
+                   use_cpu=args.device == "cpu", bf16=args.device == "cuda" and args.dtype == "bfloat16",
+                   fp16=args.device == "cuda" and args.dtype == "float16",
+                   logging_steps=1 if args.max_steps > 0 and args.max_steps <= 2 else 10,
+                   save_steps=min(500, args.max_steps) if args.max_steps > 0 else 500,
                    gradient_checkpointing=False, remove_unused_columns=False, report_to="none")
     fields = inspect.signature(DPOConfig).parameters
     options["eval_strategy" if "eval_strategy" in fields else "evaluation_strategy"] = "steps" if validation else "no"
     training_args = DPOConfig(**options)
     trainer = DPOTrainer(model=model, ref_model=ref_model, args=training_args, train_dataset=train,
                          eval_dataset=validation, processing_class=tokenizer)
-    trainer.train()
+    trainer.train(resume_from_checkpoint=args.resume_from)
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
 

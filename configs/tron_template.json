@@ -1,0 +1,40 @@
+{
+  "environment": {
+    "OMP_NUM_THREADS": "1",
+    "TOKENIZERS_PARALLELISM": "false"
+  },
+  "distributed": {
+    "tp_size": 1,
+    "dp_size": 1,
+    "use_cpu": true
+  },
+  "model": {
+    "name": ""
+  },
+  "dataset": {
+    "name": "",
+    "subset_name": null,
+    "split": "train",
+    "num_workers": 0,
+    "num_proc": 1
+  },
+  "training": {
+    "seed": 42,
+    "micro_batch_size": 1,
+    "seq_length": 128,
+    "gradient_accumulation_steps": 1,
+    "learning_rate": 0.00003,
+    "total_train_steps": 100,
+    "max_tokens": null,
+    "num_samples": 100
+  },
+  "checkpoint": {
+    "save_dir": "checkpoints_tron",
+    "load_path": null,
+    "save_frequency": 50
+  },
+  "logging": {
+    "use_wandb": false,
+    "run_name": "tron_daily"
+  }
+}

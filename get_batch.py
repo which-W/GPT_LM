@@ -9,8 +9,7 @@ def get_batch(
     device:str
 ):
     """
-    Docstring for get_batch
-    随机采样批次
+    随机采样连续序列，构造输入与下一词标签。
 
     返回：
     x:输入张量，[b,s]

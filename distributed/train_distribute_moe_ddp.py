@@ -104,7 +104,7 @@ def parse_args():
                        help='专家并行组大小(默认等于world_size,即所有GPU都用于专家并行)')
 
     parser.add_argument("--data_dtype", choices=TOKEN_DTYPES, default="int64")
-    parser.add_argument("--tokenizer_path", default="tokenizer.json")
+    parser.add_argument("--tokenizer_path", default="tokenizer_tinystories.json")
     return parser.parse_args()
 
 
@@ -181,7 +181,7 @@ def train_worker(rank, world_size, args):
     if not os.path.exists(args.train_data_path):
         raise FileNotFoundError(f"数据文件不存在: {args.train_data_path}")
 
-    train_data = load_token_data(args.train_data_path, args.data_dtype, args.tokenizer_path)
+    train_data = load_token_data(args.train_data_path, args.data_dtype, args.tokenizer_path, args.vocab_size)
     if is_main_process:
         print(f"训练数据: {args.train_data_path}, 数据量: {len(train_data):,} tokens")
 
@@ -189,7 +189,7 @@ def train_worker(rank, world_size, args):
     if args.valid_data_path:
         if not os.path.exists(args.valid_data_path):
             raise FileNotFoundError(f"验证数据文件不存在: {args.valid_data_path}")
-        val_data = load_token_data(args.valid_data_path, args.data_dtype, args.tokenizer_path)
+        val_data = load_token_data(args.valid_data_path, args.data_dtype, args.tokenizer_path, args.vocab_size)
         if is_main_process:
             print(f"验证数据: {args.valid_data_path}, 数据量: {len(val_data):,} tokens")
 

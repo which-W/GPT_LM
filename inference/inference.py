@@ -100,7 +100,7 @@ def main():
     parser = argparse.ArgumentParser(description='Transformer模型推理')
     parser.add_argument('--model_path', type=str, required=True,
                         help='模型checkpoint路径')
-    parser.add_argument('--tokenizer_path', type=str, default='tokenizer.json',
+    parser.add_argument('--tokenizer_path', type=str, default='tokenizer_tinystories.json',
                         help='tokenizer文件路径')
     parser.add_argument('--device', type=str, default='cuda',
                         help='运行设备 (cuda/cpu)')

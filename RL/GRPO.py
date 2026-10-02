@@ -208,15 +208,21 @@ class GRPOTrainerV2:
     def __init__(self, model, ref_model, train_dataset, eval_dataset, tokenizer, reward_model, config):
         if min(config.batch_size, config.ppo_batch_size, config.num_samples_per_prompt, config.num_ppo_updates) < 1:
             raise ValueError("训练批次、候选数量和更新次数必须为正数")
+        if config.num_epochs < 1 or config.max_steps < 0:
+            raise ValueError("训练轮数必须为正，总步数不能为负")
+        if min(config.logging_steps, config.save_steps, config.max_gen_length, config.max_prompt_length) < 1:
+            raise ValueError("日志间隔、保存间隔和生成长度必须为正")
         self.model = model.to(config.device)
         self.ref_model = ref_model.to(config.device).eval().requires_grad_(False)
         self.train_dataset, self.eval_dataset = train_dataset, eval_dataset
         self.tokenizer, self.reward_model, self.config = tokenizer, reward_model, config
         self.optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
         self.train_dataloader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
+        if not len(self.train_dataloader):
+            raise ValueError("训练数据不能为空")
         from transformers import get_scheduler
         self.scheduler = get_scheduler("cosine", optimizer=self.optimizer, num_warmup_steps=config.warmup_steps,
-                                       num_training_steps=max(1, len(self.train_dataloader) * config.num_epochs))
+                                       num_training_steps=config.max_steps or len(self.train_dataloader) * config.num_epochs)
         self.global_step = self.epoch = 0
         self.buffer = ExperienceBuffer()
 
@@ -313,7 +319,9 @@ class GRPOTrainerV2:
         return {key: float(np.mean(values)) for key, values in stats.items()}
 
     def train(self):
-        for epoch in range(self.config.num_epochs):
+        budget = self.config.max_steps or len(self.train_dataloader) * self.config.num_epochs
+        epochs = (budget + len(self.train_dataloader) - 1) // len(self.train_dataloader)
+        for epoch in range(epochs):
             self.epoch = epoch
             for batch in tqdm(self.train_dataloader, desc=f"轮次 {epoch + 1}"):
                 experiences = self.sample_trajectories(batch["prompt"], self.config.num_samples_per_prompt)
@@ -324,6 +332,8 @@ class GRPOTrainerV2:
                     print(f"训练步 {self.global_step}，平均奖励 {np.mean([e.reward for e in experiences]):.4f}，损失 {stats['policy_loss']:.4f}")
                 if self.global_step % self.config.save_steps == 0:
                     self.save_checkpoint()
+                if self.global_step >= budget:
+                    return
 
     def save_checkpoint(self):
         from pathlib import Path
@@ -340,6 +350,7 @@ class GRPOConfigV2:
     """采样及逐令牌策略更新的配置。"""
     output_dir: str = "grpo_output"
     num_epochs: int = 2
+    max_steps: int = 0
     batch_size: int = 2
     ppo_batch_size: int = 4
     learning_rate: float = 1e-5
@@ -364,8 +375,8 @@ class GRPOConfigV2:
 class PromptDataset(Dataset):
     """读取仅需要 prompt 文本字段的 JSON 或 JSONL 数据。"""
     def __init__(self, data_path, tokenizer=None):
-        with open(data_path, encoding="utf-8") as f:
-            data = [json.loads(line) for line in f if line.strip()] if str(data_path).endswith(".jsonl") else json.load(f)
+        with open(data_path, encoding="utf-8-sig") as f:
+            data = [json.loads(line) for line in f if line.strip()] if str(data_path).lower().endswith(".jsonl") else json.load(f)
         self.prompts = [item["prompt"] for item in data]
         if not self.prompts or any(not isinstance(prompt, str) or not prompt for prompt in self.prompts):
             raise ValueError("提示词数据不能为空，且每项必须包含非空 prompt 文本")
@@ -384,11 +395,26 @@ def main():
     parser.add_argument("--train_data_path", required=True)
     parser.add_argument("--val_data_path")
     parser.add_argument("--checkpoint_path")
-    parser.add_argument("--tokenizer_path", default="tokenizer.json")
+    parser.add_argument("--tokenizer_path", default="tokenizer_tinystories.json")
     parser.add_argument("--output_dir", default="grpo_output")
+    parser.add_argument("--max_steps", type=int, default=0)
+    parser.add_argument("--num_epochs", type=int, default=2)
+    parser.add_argument("--batch_size", type=int, default=2)
+    parser.add_argument("--ppo_batch_size", type=int, default=4)
+    parser.add_argument("--num_samples_per_prompt", type=int, default=4)
+    parser.add_argument("--num_ppo_updates", type=int, default=3)
+    parser.add_argument("--max_gen_length", type=int, default=200)
+    parser.add_argument("--max_prompt_length", type=int, default=256)
+    parser.add_argument("--max_seq_len", type=int, default=1024)
+    parser.add_argument("--learning_rate", type=float, default=1e-5)
+    parser.add_argument("--warmup_steps", type=int, default=100)
+    parser.add_argument("--logging_steps", type=int, default=10)
+    parser.add_argument("--save_steps", type=int, default=500)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
-    config = GRPOConfigV2(output_dir=args.output_dir)
-    model, tokenizer = load_policy(args.checkpoint_path, args.tokenizer_path)
+    config = GRPOConfigV2(**{key: value for key, value in vars(args).items()
+                             if key in GRPOConfigV2.__dataclass_fields__})
+    model, tokenizer = load_policy(args.checkpoint_path, args.tokenizer_path, max_seq_len=args.max_seq_len)
     ref_model = copy.deepcopy(model)
     dataset = PromptDataset(args.train_data_path)
     validation = PromptDataset(args.val_data_path) if args.val_data_path else None

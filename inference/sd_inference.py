@@ -158,7 +158,7 @@ def main():
     parser = argparse.ArgumentParser(description='投机采样推理')
     parser.add_argument('--draft', type=str, required=True, help='小模型路径')
     parser.add_argument('--target', type=str, required=True, help='大模型路径')
-    parser.add_argument('--tokenizer', type=str, default='tokenizer.json')
+    parser.add_argument('--tokenizer', type=str, default='tokenizer_tinystories.json')
     parser.add_argument('--gamma', type=int, default=5, help='投机步数')
     parser.add_argument('--temperature', type=float, default=0.8, help='温度参数')
     parser.add_argument('--top_k', type=int, default=None, help='top-k采样')

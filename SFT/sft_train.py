@@ -113,7 +113,7 @@ def run_sft_experiment(args):
     # ── 训练数据加载与预处理 ──────────────────────────────────────
     print(f"Loading training data from {args.train_data_path}...")
     raw_train_data = []
-    with open(args.train_data_path, "r", encoding="utf-8") as f:
+    with open(args.train_data_path, "r", encoding="utf-8-sig") as f:
         for line in f:
             raw_train_data.append(json.loads(line))
 
@@ -148,7 +148,7 @@ def run_sft_experiment(args):
     # ── 验证集 ────────────────────────────────────────────────────
     print(f"Loading validation data from {args.val_data_path}...")
     val_prompts, val_ground_truths = [], []
-    with open(args.val_data_path, "r", encoding="utf-8") as f:
+    with open(args.val_data_path, "r", encoding="utf-8-sig") as f:
         for i, line in enumerate(f):
             if i >= args.max_eval_samples:
                 break

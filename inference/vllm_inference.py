@@ -178,7 +178,7 @@ class VLLMTextGenerator:
 def main():
     parser = argparse.ArgumentParser(description='vLLM 推理脚本')
     parser.add_argument('--model_path', type=str, required=True, help='模型 checkpoint 路径')
-    parser.add_argument('--tokenizer_path', type=str, default='tokenizer.json', help='tokenizer 文件路径')
+    parser.add_argument('--tokenizer_path', type=str, default='tokenizer_tinystories.json', help='tokenizer 文件路径')
     parser.add_argument('--device', type=str, default='cuda', help='运行设备 (cuda/cpu)')
     parser.add_argument('--num_kv_blocks', type=int, default=1024, help='KV Cache 物理块数')
     parser.add_argument('--dtype', type=str, default='float16', choices=['float32', 'float16', 'bfloat16'])

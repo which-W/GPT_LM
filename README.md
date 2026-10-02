@@ -46,7 +46,7 @@ uv sync --locked
 新预处理生成同名 `.meta.json`，记录 dtype、token 数量和分词器指纹。读取时核对元数据，避免格式或分词器混用。
 
 ```bash
-python dataset_process.py --input_path data/my_train.txt --output_path data/my_train.bin --tokenizer_path tokenizer.json --dtype int64
+python dataset_process.py --input_path data/my_train.txt --output_path data/my_train.bin --tokenizer_path tokenizer_tinystories.json --dtype int64
 ```
 
 `tokenizer.py` 只有直接执行时才会训练分词器，导入不会覆盖文件。重新训练分词器后应重新生成数据，并训练匹配词表的模型。`mapping_dicts/` 的历史映射不能直接用于当前分词器，必须确保来源词表一致。
@@ -56,7 +56,7 @@ python dataset_process.py --input_path data/my_train.txt --output_path data/my_t
 在项目根目录运行。建议将修复后的训练结果保存到新目录，保留历史模型供比较：
 
 ```bash
-python train.py --train_data_path data/TinyStories-train.bin --valid_data_path data/TinyStories-valid.bin --data_dtype int64 --tokenizer_path tokenizer.json --checkpoint_dir checkpoints_fixed --dtype float32
+python train.py --train_data_path data/TinyStories-train.bin --valid_data_path data/TinyStories-valid.bin --data_dtype int64 --tokenizer_path tokenizer_tinystories.json --checkpoint_dir checkpoints_fixed --dtype float32
 ```
 
 支持 `--no_rope`、`--no_rms_norm`、`--norm_rope pre/post`、`--ffn_type swiglu/silu` 消融选项。`--no_rms_norm` 同时关闭层内与最终归一化。CUDA 的 float16、bfloat16 设置使用自动混合精度，并保留单精度参数；FP16 启用梯度缩放。
@@ -91,8 +91,8 @@ MoE 分布式入口是 `distributed.train_distribute_moe_ddp`。进程按一致�
 ## 推理
 
 ```bash
-python -m inference.inference --model_path checkpoints_fixed/checkpoint_final.pt --tokenizer_path tokenizer.json --prompt "Once upon a time"
-python -m inference.vllm_inference --model_path checkpoints_fixed/checkpoint_final.pt --tokenizer_path tokenizer.json --prompt "Once upon a time"
+python -m inference.inference --model_path checkpoints_fixed/checkpoint_final.pt --tokenizer_path tokenizer_tinystories.json --prompt "Once upon a time"
+python -m inference.vllm_inference --model_path checkpoints_fixed/checkpoint_final.pt --tokenizer_path tokenizer_tinystories.json --prompt "Once upon a time"
 ```
 
 普通生成按检查点配置加载基础、mHC、MoE 或 Engram 模型。分页生成当前支持基础 Transformer。投机采样需要相同分词器、相同输出词表维度及支持缓存回退的模型。
@@ -132,6 +132,21 @@ python -m unittest discover -s tests -v
 python tests/smoke_training.py
 ```
 
-第一条验证数值、梯度、缓存、分页及检查点的一致性。第二条用临时小数据实际运行训练入口，并验证检查点能重新加载，不修改现有 TinyStories 数据和模型。追加名称片段可只运行指定场景，例如 `Gloo`。
+第一条验证数据兼容、参数转换、训练预算和输出保护。第二条使用临时数据和本地小模型实际运行训练入口，并检查保存的步数、分词器及权重，不修改现有 TinyStories 数据和模型；Tron 只检查命令预览。可指定训练类型，例如 `python tests/smoke_training.py ddp moe_ddp --processes 2`。
 
 详细修复及验证范围见 `FIXES.md`。如果历史模型曾使用错误 dtype 读取数据训练，其已学到的参数无法通过修改代码恢复正确训练结果，需要使用正确数据重新训练。现有历史文件保留供比较。
+
+## 日常训练
+
+当前 TinyStories 二进制数据使用原始 30000 词表。已从 Git 初始版本恢复对应分词器为 `tokenizer_tinystories.json`，并抽查训练/验证数据的首段编码匹配。当前 `tokenizer.json` 的 4642 词表与历史数据不匹配，不用于这些文件。训练读取会检查 token 编号范围。详细步骤见 [TRAINING.md](TRAINING.md)。
+
+`train_daily.ps1` 现已统一接入基础、mHC、MoE、混合 MoE、Engram、DDP、MoE DDP、SFT、EI、DPO、GRPO 与 Tron 共 12 种训练方式。不指定类型时显示中文选择菜单：
+
+```powershell
+.\train_daily.ps1
+.\train_daily.ps1 -ListTypes
+.\train_daily.ps1 -TrainType moe -SmokeTest
+.\train_daily.ps1 -TrainType engram -SmokeTest -DryRun
+```
+
+SFT/EI 需要 `ModelId`；DPO/GRPO 需要对应的 JSON/JSONL 数据；Tron 需要 `ConfigPath`，配置模板见 `configs/tron_template.json`。Windows 分布式默认使用 Gloo/CPU。
